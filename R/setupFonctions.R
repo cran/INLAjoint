@@ -1,5 +1,5 @@
 #' Setup survival part for outcome m
-#' @description Setup survival part for outcome m
+#' @description Setup survival part for outcome m (internal function)
 #' input:
 #' @param formula with inla.surv() object as an outcome
 #' @param formLong formula from the longitudinal part, if any
@@ -15,6 +15,9 @@
 #' @param NFT maximum number of functions of time (fixed value)
 #' @param corLong boolean that indicates if random effects across longitudinal markers are correlated,
 #' when multiple longitudinal markers are included in the model
+#' @param dataOnly boolean for internal use, indicates if only preparing data (i.e., not fitting the model)
+#' @param SurvInfo information about survival submodels for internal use
+#' @param strata covariate for stratified proportional hazards model
 #' output:
 #' @return YS_data includes the values of the survival outcome and covariates associated to this survival part,
 #'         with the association parameters but the provided id are temporary and they will be updated after
@@ -24,7 +27,7 @@
 #' @export
 
 
-setup_S_model <- function(formula, formLong, dataSurv, LSurvdat, timeVar, assoc, id, m, K, M, NFT, corLong){
+setup_S_model <- function(formula, formLong, dataSurv, LSurvdat, timeVar, assoc, id, m, K, M, NFT, corLong, dataOnly, SurvInfo, strata){
   # Event outcome
   YS <- strsplit(as.character(formula), split="~")[[2]]
   FE_formS <- nobars(formula)
@@ -36,6 +39,7 @@ setup_S_model <- function(formula, formLong, dataSurv, LSurvdat, timeVar, assoc,
   if(colnames(DFS)[1]=="(Intercept)") colnames(DFS)[1] <- "Intercept"
   if(grepl("inla.surv", YS)){
     # attach(dataSurv)
+    if(dataOnly & length(paste0(SurvInfo$survOutcome))>1) assign(paste0(SurvInfo$survOutcome)[2], dataSurv)
     YS <- with(dataSurv, eval(parse(text=YS)))
     YSname <- paste0("S", m)
     # detach(dataSurv)
@@ -48,6 +52,11 @@ setup_S_model <- function(formula, formLong, dataSurv, LSurvdat, timeVar, assoc,
   names(YS_data) <- paste0(gsub(":", ".X.", gsub("\\s", ".", names(YS_data))), "_S", m)
   YSformF <- formula(paste0(YSname, "_S", m, " ~ -1 +", paste0(paste0(gsub(":", ".X.", gsub("\\s", ".", colnames(DFS))), "_S", m, collapse="+"))))
   CLid <- 0 # keep track for unique id if corLong is true for shared random effects independently
+  # strata?
+  if(!is.null(strata)){
+    YS_data <- append(YS_data, list(dataSurv[, strata]))
+    names(YS_data)[length(YS_data)] <- strata
+  }
   # association
   if(length(assoc)!=0){
     YS_assoc <- unlist(assoc[1:K])[seq(m, K*M, by=M)] # extract K association terms associated to time-to-event m
@@ -155,7 +164,7 @@ setup_S_model <- function(formula, formLong, dataSurv, LSurvdat, timeVar, assoc,
 }
 
 #' Setup outcome for longitudinal marker
-#' @description Setup outcome for longitudinal marker
+#' @description Setup outcome for longitudinal marker  (internal function)
 #' input:
 #' @param formula with lme4 format (fixed effects and random effects in the same object)
 #' @param dataset that contains the outcome
@@ -173,18 +182,25 @@ setup_Y_model <- function(formula, dataset, family, k){
 }
 
 #' Setup fixed effects part for longitudinal marker k
-#' @description Setup fixed effects part for longitudinal marker k
+#' @description Setup fixed effects part for longitudinal marker k  (internal function)
 #' input:
 #' @param formula with lme4 format (fixed effects and random effects in the same object)
 #' @param dataset that contains the outcome
 #' @param timeVar name of time variable
 #' @param k identifies the longitudinal marker among 1:K markers
+#'@param dataOnly boolean for internal use, indicates if only preparing data (i.e., not fitting the model)
 #' output:
 #' @return colnames(FE) names of the fixed effects (interactions are separated
 #' by ".X." instead of ":" to facilitate their manipulation)
 #' @return FE values of the fixed effects
-setup_FE_model <- function(formula, dataset, timeVar, k){
+setup_FE_model <- function(formula, dataset, timeVar, k, dataOnly){
   FE_form <- nobars(formula)
+  if(length(which(sapply(dataset, class)=="factor"))>0 & !dataOnly){ # deal with factors when modalities are missing
+    factors_columns <- which(sapply(dataset, class)=="factor")
+    for(fctc in factors_columns){
+      if(length(unique(dataset[, fctc]))< length(levels(dataset[, fctc]))) dataset[, fctc] <- as.integer(dataset[, fctc])-1
+    }
+  }
   FE <- model.matrix(FE_form, model.frame(FE_form, dataset, na.action=na.pass))
   #if(colnames(FE)[1]=="(Intercept)") colnames(FE)[1] <- "Intercept"
   colnames(FE) <- gsub(":", ".X.", gsub("\\s", ".", colnames(FE)))
@@ -194,7 +210,7 @@ setup_FE_model <- function(formula, dataset, timeVar, k){
 }
 
 #' Setup random effects part for longitudinal marker k
-#' @description Setup random effects part for longitudinal marker k
+#' @description Setup random effects part for longitudinal marker k  (internal function)
 #' input:
 #' @param formula with lme4 format (fixed effects and random effects in the same object)
 #' @param dataset that contains the outcome

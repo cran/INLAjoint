@@ -19,6 +19,7 @@ joint(
   assoc = NULL,
   assocSurv = NULL,
   corLong = FALSE,
+  corRE = TRUE,
   dataOnly = FALSE,
   longOnly = FALSE,
   control = list()
@@ -30,8 +31,7 @@ Keep it as NULL if no survival part is needed and give a list of formulas for co
 
 \item{formLong}{the formula for the longitudinal outcome, structured as with the lme4 package
 (Mächler et al., 2015) for linear mixed-effects models (i.e., including random effects within parenthesis).
-Keep it as NULL if no longitudinal part is needed and give a list of formulas for multivariate longitudinal.
-At the moment, the random effects are limited to intercept, linear slope or random intercept + linear slope.}
+Keep it as NULL if no longitudinal part is needed and give a list of formulas for multivariate longitudinal.}
 
 \item{dataSurv}{the dataset for the survival part. Keep it as NULL if no survival part is needed or if
 the survival data is in the longitudinal dataset (it will extract the last line for each individual as
@@ -95,6 +95,11 @@ their random effects in multiple survival models).}
 \item{corLong}{a boolean that only applies when multiple longitudinal markers are fitted: should
 the random effects  accross markers be correlated (TRUE) or independent (FALSE)? Default is FALSE.}
 
+\item{corRE}{list of the size of number of groups of random effects (i.e., equal to 1 if there is only one
+longitudinal marker or if corLong is TRUE and equal to the number of markers otherwise), each element is a
+boolean indicating if the random effects of the group must be correlated or independent (i.e.,
+diagonal variance-covariance). Default is FALSE.}
+
 \item{dataOnly}{a boolean to only prepare the data with the correct format without running the model.}
 
 \item{longOnly}{a boolean to only prepare the data for the longitudinal part of a longitudinal-survival joint model
@@ -115,6 +120,16 @@ with the correct format without running the model.}
   Default is \code{list(mean=0, prec=1)}}
   \item{\code{priorRandom}}{list with prior distribution for the multivariate random effects
   (Inverse Wishart). Default is \code{list(r=10, R=1)}, see "inla.doc("iidkd") for more details.}
+  \item{\code{initVC}}{list of the size of number of groups of random effects giving initial values for
+  variance-covariance of random effects, first values are variance and then covariances (as displayed in summary).
+  All the elements of the covariance matrix must be fixed but in case of multiple groups of random effects,
+  it is possible to fix initial values for only some groups, then elements in the list that are not initialized must be an empty string.}
+  \item{\code{initSD}}{same as initVC but to fix standard deviations and correlations instead
+  (only one of these two arguments can be used).}
+  \item{\code{strata}}{list of the same size as the number of survival submodels, giving the name of
+  covariates for stratified proportional hazards model (default is NULL).}
+  \item{\code{fixRE}}{list of the size of number of groups of random effects, each element is a
+  boolean indicating if the random effects of the group must be fixed or estimated.}
   \item{\code{assocInit}}{Initial value for all the association parameters (default is 0.1).}
   \item{\code{int.strategy}}{a character string giving the strategy for the numerical integration
   used to approximate the marginal posterior distributions of the latent field. Available options are

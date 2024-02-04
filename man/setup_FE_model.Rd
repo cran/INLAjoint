@@ -4,7 +4,7 @@
 \alias{setup_FE_model}
 \title{Setup fixed effects part for longitudinal marker k}
 \usage{
-setup_FE_model(formula, dataset, timeVar, k)
+setup_FE_model(formula, dataset, timeVar, k, dataOnly)
 }
 \arguments{
 \item{formula}{with lme4 format (fixed effects and random effects in the same object)}
@@ -13,7 +13,9 @@ setup_FE_model(formula, dataset, timeVar, k)
 
 \item{timeVar}{name of time variable}
 
-\item{k}{identifies the longitudinal marker among 1:K markers
+\item{k}{identifies the longitudinal marker among 1:K markers}
+
+\item{dataOnly}{boolean for internal use, indicates if only preparing data (i.e., not fitting the model)
 output:}
 }
 \value{
@@ -23,6 +25,6 @@ by ".X." instead of ":" to facilitate their manipulation)
 FE values of the fixed effects
 }
 \description{
-Setup fixed effects part for longitudinal marker k
+Setup fixed effects part for longitudinal marker k  (internal function)
 input:
 }
