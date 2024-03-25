@@ -4,8 +4,8 @@
 
 summary.INLAjoint <- function(object, ...){
   arguments <- list(...)
-  if(!is.null(arguments$hazr)) hr=arguments$hazr
   if(is.null(arguments$hr)) hr=F else hr=arguments$hr
+  if(!is.null(arguments$hazr)) hr=arguments$hazr
   if(is.null(arguments$sdcor)) sdcor=F else sdcor=arguments$sdcor
   if(is.null(arguments$NsampRE)) NsampRE=2000 else NsampRE=arguments$NsampRE
   if (!"INLAjoint" %in% class(object)){
@@ -37,7 +37,7 @@ summary.INLAjoint <- function(object, ...){
   Ncompo <- length(unique(CompoFixed))
   Mark <- unique(CompoFixed)
   Lmark <- Mark[grep("L", Mark)] # Longitudinal marker(s)
-  Smark <- Mark[grep("S", Mark)] # Survival outcome(s)
+  Smark <- object$survOutcome #Mark[grep("S", Mark)] # Survival outcome(s)
   NLongi <- length(unique(Lmark))
   NSurv <- length(unique(Smark))
   Hnames <- rownames(object$summary.hyperpar)
@@ -124,7 +124,7 @@ summary.INLAjoint <- function(object, ...){
   }
   NRandS <- length(unique(substring(rownames(RandEffS), nchar(rownames(RandEffS))-1, nchar(rownames(RandEffS)))))
   AssocALL <- object$summary.hyperpar[which(substring(Hnames, 1, 5)=="Beta "), -which(colnames(object$summary.hyperpar)=="mode")]
-  AssocNL <- object$summary.hyperpar[sort(c(grep("(scopy theta)", Hnames), grep("(scopy slope)", Hnames))), -which(colnames(object$summary.hyperpar)=="mode")]
+  AssocNL <- object$summary.hyperpar[sort(c(grep("(scopy theta)", Hnames), grep("(scopy slope)", Hnames), grep("(scopy mean)", Hnames))), -which(colnames(object$summary.hyperpar)=="mode")]
   AssocLS <- NULL
   AssocSS <- NULL
   if(!is.null(AssocALL)){
@@ -335,7 +335,7 @@ summary.INLAjoint <- function(object, ...){
         BHlo <- NULL
         BHme <- NULL
         BHup <- NULL
-        for(j in 1:length(object$marginals.random[[i]])){
+        for(j in 1:length(object$marginals.random[[paste0("baseline",i,".hazard")]])){
           # m <- inla.smarginal(object$marginals.random[[i]][[j]])
           # ab <- inla.qmarginal(c(0.001, 0.999), m)
           # ii <- which((m$x>=ab[1]) & (m$x<=ab[2]))
@@ -345,7 +345,7 @@ summary.INLAjoint <- function(object, ...){
           #trsf <- inla.zmarginal(inla.tmarginal(function(x) exp(x), m), silent=T)
           #BHmean <- c(BHmean, trsf$mean)
           #BSsd <- c(BSsd, trsf$sd)
-          Mm <- INLA::inla.qmarginal(c(0.025, 0.5, 0.975), object$marginals.random[[i]][[j]])
+          Mm <- INLA::inla.qmarginal(c(0.025, 0.5, 0.975), object$marginals.random[[paste0("baseline",i,".hazard")]][[j]])
           BHlo <- c(BHlo, exp(Mm[1]))
           BHme <- c(BHme, exp(Mm[2]))
           BHup <- c(BHup, exp(Mm[3]))
@@ -420,7 +420,6 @@ summary.INLAjoint <- function(object, ...){
       SurvEff[[i]] <- SurvEffi
     }
     out$SurvEff <- SurvEff
-
     if(NRandS>0){
       NREcurS <- 1
       ReffListS <- vector("list", NSurv)

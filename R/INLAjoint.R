@@ -11,9 +11,10 @@
 #'
 #' Contact: \email{INLAjoint@gmail.com}
 #'
-#' @docType package
 #' @name INLAjoint
+#' @export
+
 INLAjoint <- function() {
   message("Welcome to the INLAjoint package!")
-  #utils::browseVignettes("INLAjoint")
+  utils::vignette("INLAjoint")
 }

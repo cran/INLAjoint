@@ -150,10 +150,10 @@
 #'
 #' @examples
 #'\donttest{# joint model with 3 longitudinal / 3 competing risks of event
-#' data(Long)
-#' data(Surv)
+#' data(Longsim)
+#' data(Survsim)
 #' f1 <- function(x) x^2 # quadratic function of time for first marker
-#' Nsplines <- splines::ns(Long$time, knots=2) # 2 ns splines for second marker
+#' Nsplines <- splines::ns(Longsim$time, knots=2) # 2 ns splines for second marker
 #' f2 <- function(x) predict(Nsplines, x)[,1]
 #' f3 <- function(x) predict(Nsplines, x)[,2]
 #'
@@ -165,7 +165,7 @@
 #'   formSurv = list(INLA::inla.surv(deathTimes, Event1) ~ binX + ctsX,
 #'                   INLA::inla.surv(deathTimes, Event2) ~ binX,
 #'                   INLA::inla.surv(deathTimes, Event3) ~ ctsX),
-#'   dataLong = Long, dataSurv=Surv, id = "Id", timeVar = "time", corLong=TRUE,
+#'   dataLong = Longsim, dataSurv=Survsim, id = "Id", timeVar = "time", corLong=TRUE,
 #'   family = c("gaussian", "poisson", "binomial"), basRisk = c("rw1", "rw1", "rw1"),
 #'   assoc = list(c("CV", "CS", ""),  c("CV", "", "SRE"), c("", "CV", "")),
 #'   control=list(int.strategy="eb"))
@@ -196,7 +196,6 @@ joint <- function(formSurv = NULL, formLong = NULL, dataSurv=NULL, dataLong=NULL
   if(longOnly & !is.null(assoc)) assoc <- NULL
   callJ <- deparse(sys.call())
 if(is_Long & is_Surv & is.null(assoc)) warning("assoc is not defined (association between longitudinal and survival), please specify it (note: use empty string for no association)")
-
   # Number of survival events = M and conversion to list if M=1
   M=0;K=0
   if(is_Surv){
@@ -281,6 +280,7 @@ if(is_Long & is_Surv & is.null(assoc)) warning("assoc is not defined (associatio
           warning("There is no id variable in the longitudinal model? (id argument)")
         }else{
           if(!id %in% colnames(dataLong[[i]])) stop("id variable not found in dataLong!")
+          if(TRUE %in% c(as.integer(dataLong[[i]][,id]) != as.integer(dataLong[[i]][,id])[order(as.integer(dataLong[[i]][,id]))])) stop("id variable must have contiguous values starting at 1.")
           if(max(as.integer(dataLong[[i]][,id]))!=length(unique(dataLong[[i]][,id])) & modifID){ # avoid missing ids
             warning(paste0("Max id is ", max(as.integer(dataLong[[i]][,id])), " but there are only ", length(unique(dataLong[[i]][,id])), " individuals with longitudinal records, I'm reassigning id from 1 to ", length(unique(dataLong[[i]][,id]))))
             CID <- cbind(1:length(unique(as.integer(dataLong[[i]][,id]))), unique(as.integer(dataLong[[i]][,id])))
@@ -290,6 +290,12 @@ if(is_Long & is_Surv & is.null(assoc)) warning("assoc is not defined (associatio
             modifID <- FALSE
           }
         }
+        # save info factors character variables for predictions
+        lonFac1 <- which(colClass=="factor" & colnames(dataLong[[i]])!=id)
+        lonChar1 <- which(colClass=="character" & colnames(dataLong[[i]])!=id)
+        lonFac <- sapply(lonFac1, function(x) levels(dataLong[[i]][, x]))
+        lonChar <- sapply(lonChar1, function(x) unique(dataLong[[i]][, x]))
+        lonFacChar <- append(lonFac, lonChar)
       }
       if(!(length(corRE)==1 & corRE[[1]]==TRUE)){
         if(corLong & length(corRE)==1) stop("The argument 'corLong' must be set to FALSE to allow for independence between random effects of a marker ('corRE').")
@@ -336,24 +342,31 @@ if(is_Long & is_Surv & is.null(assoc)) warning("assoc is not defined (associatio
         for(fctrs in 1:length(which(colClass=="factor"))){
           lvlFact <- levels(dataSurv[[i]][,which(colClass=="factor")[fctrs]]) # save reference level because otherwise it can change it
           #dataSurv[[i]][,which(colClass=="factor")[fctrs]] <- factor(sub("-","", dataSurv[[i]][,which(colClass=="factor")[fctrs]]), levels=sub("-","", lvlFact))
-          dataSurv[[i]][,which(colClass=="factor")[fctrs]] <- factor(sub("[^[:alnum:] ]","", dataSurv[[i]][,which(colClass=="factor")[fctrs]]), levels=sub("[^[:alnum:] ]","", lvlFact))        }
+          dataSurv[[i]][,which(colClass=="factor")[fctrs]] <- factor(sub("[^[:alnum:] ]","", dataSurv[[i]][,which(colClass=="factor")[fctrs]]), levels=sub("[^[:alnum:] ]","", lvlFact))
+        }
       }
       if(!is.null(id)){
         if(id %in% colnames(dataSurv[[i]]) & exists("ResID")){
             dataSurv[[i]][,id] <- CID[unlist(sapply(dataSurv[[i]][,id], function(x) which(x==CID[,2]))), 1]
         }else if(id %in% colnames(dataSurv[[i]]) & !is_Long){
-		 if(max(as.integer(dataSurv[[i]][,id]))!=length(unique(dataSurv[[i]][,id])) & !dataOnly){
+          if(TRUE %in% c(as.integer(dataSurv[[i]][,id]) != as.integer(dataSurv[[i]][,id])[order(as.integer(dataSurv[[i]][,id]))])) stop("id variable must have contiguous values starting at 1.")
+          if(max(as.integer(dataSurv[[i]][,id]))!=length(unique(dataSurv[[i]][,id])) & !dataOnly){
             warning(paste0("Max id is ", max(as.integer(dataSurv[[i]][,id])), " but there are only ", length(unique(dataSurv[[i]][,id])),
                            " individuals with longitudinal records, I'm reassigning ids"))
             CID <- cbind(1:length(unique(as.integer(dataSurv[[i]][,id]))), unique(as.integer(dataSurv[[i]][,id])))
             dataSurv[[i]][,id] <- CID[sapply(dataSurv[[i]][,id], function(x) which(x==CID[,2])), 1]
           }
-		}
+		    }
       }
+      # save info factors character variables for predictions
+      survFac1 <- which(colClass=="factor" & colnames(dataSurv[[i]])!=id)
+      survChar1 <- which(colClass=="character" & colnames(dataSurv[[i]])!=id)
+      survFac <- sapply(survFac1, function(x) levels(dataSurv[[i]][, x]))
+      survChar <- sapply(survChar1, function(x) unique(dataSurv[[i]][, x]))
+      survFacChar <- append(survFac, survChar)
     }
     if(!exists("LSurvdat")) LSurvdat <- dataSurv[[1]]
   }
-
 
   # Check if no survival => no assoc
   NLassoc <- NULL
@@ -419,14 +432,16 @@ if(is_Long & is_Surv & is.null(assoc)) warning("assoc is not defined (associatio
   if(is.null(control[["priorAssoc"]]$prec)) control$priorAssoc$prec <- 0.01
   if(is.null(control[["assocInit"]])) control$assocInit <- 0.1# switch from INLA's default 1 to 0.1 for more stability
   if(is.null(control[["NLpriorAssoc"]]$mean$mean)) control$NLpriorAssoc$mean$mean <- 1
-  if(is.null(control[["NLpriorAssoc"]]$mean$prec)) control$NLpriorAssoc$mean$prec <- 0.1
+  if(is.null(control[["NLpriorAssoc"]]$mean$prec)) control$NLpriorAssoc$mean$prec <- 0.01
   if(is.null(control[["NLpriorAssoc"]]$mean$initial)) control$NLpriorAssoc$mean$initial <- 0.1
   if(is.null(control[["NLpriorAssoc"]]$slope$mean)) control$NLpriorAssoc$slope$mean <- 0
-  if(is.null(control[["NLpriorAssoc"]]$slope$prec)) control$NLpriorAssoc$slope$prec <- 0.1
+  if(is.null(control[["NLpriorAssoc"]]$slope$prec)) control$NLpriorAssoc$slope$prec <- 0.01
   if(is.null(control[["NLpriorAssoc"]]$slope$initial)) control$NLpriorAssoc$slope$initial <- 0.1
   if(is.null(control[["NLpriorAssoc"]]$spline$mean)) control$NLpriorAssoc$spline$mean <- 0
   if(is.null(control[["NLpriorAssoc"]]$spline$prec)) control$NLpriorAssoc$spline$prec <- 20
   if(is.null(control[["NLpriorAssoc"]]$spline$initial)) control$NLpriorAssoc$spline$initial <- 0.1
+  if(is.null(control[["n_NL"]])) control$n_NL <- 3 # number of splines for non-linear effects
+  # if(is.null(control[["cutpointsNL"]])) control$cutpointsNL <- "observations"
   if(is.null(control[["NLpriorAssoc"]]$steps)) control$NLpriorAssoc$steps <- FALSE
   if(is.null(control[["priorSRE_ind"]]$mean)) control$priorSRE_ind$mean <- 0
   if(is.null(control[["priorSRE_ind"]]$prec)) control$priorSRE_ind$prec <- 1
@@ -434,8 +449,6 @@ if(is_Long & is_Surv & is.null(assoc)) warning("assoc is not defined (associatio
   if(is.null(control[["priorRandom"]]$R)) control$priorRandom$R <- 1
   # if(is.null(control[["fixdiagRE"]])) control$fixdiagRE <- as.list(rep(FALSE, K))
   # if(is.null(control[["fixoffdiagRE"]])) control$fixoffdiagRE <- as.list(rep(FALSE, K))
-  if(is.null(control[["n_NL"]])) control$n_NL <- 5 # number of splines for non-linear effects
-  if(is.null(control[["cutpointsNL"]])) control$cutpointsNL <- "observations"
   if(is.null(control[["rerun"]])) control$rerun <- FALSE
   if(is.null(control[["tolerance"]])) control$tolerance <- 0.005
   if(is.null(control[["h"]])) control$h <- 0.005
@@ -474,7 +487,9 @@ if(is_Long & is_Surv & is.null(assoc)) warning("assoc is not defined (associatio
           #   diag(mat_k[[k]])[l] <- ifelse(control$initVC[[k]][1:NRE_k][l]=="", 4, as.numeric(control$initVC[[k]][1:NRE_k][l]))
           # }
           if(corRE[[k]]){
-            mat_k[[k]][lower.tri(mat_k[[k]])] <- mat_k[[k]][upper.tri(mat_k[[k]])] <- control$initVC[[k]][-(1:NRE_k)]
+            mat_k[[k]][lower.tri(mat_k[[k]])] <- control$initVC[[k]][-(1:NRE_k)]
+            mat_k[[k]] <- t(mat_k[[k]])
+            mat_k[[k]][lower.tri(mat_k[[k]])] <- control$initVC[[k]][-(1:NRE_k)]
           }else{
             mat_k[[k]][lower.tri(mat_k[[k]])] <- mat_k[[k]][upper.tri(mat_k[[k]])] <- 0
           }
@@ -625,6 +640,16 @@ if(is_Long & is_Surv & is.null(assoc)) warning("assoc is not defined (associatio
         return(list(maxTime=max(OUTc$time, OUTc$lower), survOutcome=attr(OUTc, "names.ori")$event, nameTimeSurv=attr(OUTc, "names.ori")$time))
       }
       SurvInfo <- lapply(1:M, SurvInfofun)
+      if(length(as.character(SurvInfo[[m]]$survOutcome))==1){
+        if(!(inherits(dataS[, as.character(SurvInfo[[m]]$survOutcome)], "integer") | inherits(dataS[, as.character(SurvInfo[[m]]$survOutcome)], "numeric"))) stop("Event indicator in survival must be integer or numeric, see ?inla.surv for details.")
+      }else if(length(as.character(SurvInfo[[m]]$survOutcome))>1){
+        if(!(inherits(eval(parse(text=(paste0(as.character(SurvInfo[[m]]$survOutcome)[2],
+                                             as.character(SurvInfo[[m]]$survOutcome)[1],
+                                             as.character(SurvInfo[[m]]$survOutcome)[3])))), "integer") |
+             inherits(eval(parse(text=(paste0(as.character(SurvInfo[[m]]$survOutcome)[2],
+                                              as.character(SurvInfo[[m]]$survOutcome)[1],
+                                              as.character(SurvInfo[[m]]$survOutcome)[3])))), "numeric"))) stop("Event indicator in survival must be integer or numeric, see ?inla.surv for details.")
+      }
       # first set up the data and formula for marker m
       modelYS[[m]] <- setup_S_model(formSurv[[m]], formLong, dataS, LSurvdat, timeVar, assoc, id, m, K, M, NFT, corLong, dataOnly, SurvInfo[[m]], strata=control$strata[[m]])
       # if cfg=TRUE then compute the baseline risk for future values in case of predictions required (this has no cost)
@@ -1711,6 +1736,8 @@ if(is_Long & is_Surv & is.null(assoc)) warning("assoc is not defined (associatio
   }
     # if(cfg){ # for efficient sampling in predictions
     namesTot <- NULL
+    SELsurv <- NULL
+    SELname <- NULL
     if(is_Surv){
       for(m in 1:M){
         namesTot <- c(namesTot, names(data_cox[[m]])[which(substr(names(data_cox[[m]]), nchar(names(data_cox[[m]]))-2, nchar(names(data_cox[[m]])))==paste0("_S", m) &
@@ -1719,16 +1746,13 @@ if(is_Long & is_Surv & is.null(assoc)) warning("assoc is not defined (associatio
         RMNT <- which(namesTot %in% c(REstrucS, paste0("W", substr(REstrucS, 3, nchar(REstrucS)))))
         if(length(RMNT)>0) namesTot <- namesTot[-RMNT]
         if(basRisk[[m]] %in% c("rw1", "rw2")){
-          SELsurv <- rep(list(1:(NbasRisk+1)), M)
-          SELname <- paste0("baseline", 1:M, ".hazard")
+          SELsurv <- append(SELsurv, list(1:(NbasRisk+1)))
+          SELname <- c(SELname, paste0("baseline", m, ".hazard"))
         }else{
-          SELsurv <- NULL
-          SELname <- NULL
+          SELsurv <- append(SELsurv, NULL)
+          SELname <- c(SELname, NULL)
         }
       }
-    }else{
-      SELsurv <- NULL
-      SELname <- NULL
     }
     namesTot <- c(namesTot, names(dataFE))
     SEL=c(SELsurv, rep(list(1), length(namesTot)))
@@ -1843,7 +1867,7 @@ if(is_Long & is_Surv & is.null(assoc)) warning("assoc is not defined (associatio
       message("Step 3: Run model with splines association(s)")
     }
   }
-  res <- INLA::inla(formulaJ,family = fam,
+  res <- INLA::inla(formulaJ, family = fam,
               data=joint.data,
               control.fixed = list(mean=control$priorFixed$mean, prec=control$priorFixed$prec,
                                    mean.intercept=control$priorFixed$mean.intercept, prec.intercept=control$priorFixed$prec.intercept, remove.names=RMVN),
@@ -1865,7 +1889,7 @@ if(is_Long & is_Surv & is.null(assoc)) warning("assoc is not defined (associatio
                                 restart=control$control.mode$restart,
                                 fixed=control$control.mode$fixed),
               safe=safemode, verbose=verbose, keep = keep)
-  while(is.null(res$names.fixed) & is.null(control$remove.names)){ # in some situations, intercepts are manually removed, then this should not trigger
+  while(is.null(res$names.fixed) & is.null(control$remove.names) & !is.null(dataFE)){ # in some situations, intercepts are manually removed, then this should not trigger
     warning("There is an unexpected issue with the fixed effects in the output, the model is rerunning to fix it.")
     CT1 <- res$cpu.used[4]
     res <- INLA::inla.rerun(res)
@@ -1911,10 +1935,14 @@ if(is_Long & is_Surv & is.null(assoc)) warning("assoc is not defined (associatio
   if(exists("REstruc")) res$mat_k <- mat_k
   if(!is.null(control$fixRE)) res$fixRE <- control$fixRE
   if(!is.null(control$strata)) res$strata <- control$strata
+  if(exists("lonFacChar")) res$lonFacChar <- lonFacChar
+  if(exists("survFacChar")) res$survFacChar <- survFacChar
   # if(exists("REstruc")) res$fixdiagRE <- control$fixdiagRE
   # if(exists("REstruc")) res$fixoffdiagRE <- control$fixoffdiagRE
   if(exists("REstruc")) res$corRE <- corRE # switch for diagonal/correlated random effects within a longitudinal marker
   if(exists("REstrucS")) res$REstrucS <- REstrucS
+  res$formSurv <- formSurv
+  res$formLong <- formLong
   if(exists("NLcov_name")) res$NLinfo <- list(cov_NL=cov_NL,
                                               NLcov_name=NLcov_name,
                                               NLassoc=NLassoc,

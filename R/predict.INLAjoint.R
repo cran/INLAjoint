@@ -1,21 +1,82 @@
+#' Computes predictions for a given model fitted with INLAjoint
+#'
+#' @description This function allows to compute predictions for a given model fitted with INLAjoint,
+#' the default behavior (without arguments) returns fitted values for each component of the model. It
+#' is also possible to supply a dataset for which predictions are required, this dataset must have
+#' the same structure as the dataset used for the model fitting (i.e., same columns). The default
+#' returned predictions corresponds to the linear predictors for each outcomes.
+#'
+#' @param object an object that contains a model fitted with INLAjoint.
+#' @param newData a dataset with the same columns as those used to fit the model. When using a longitudinal
+#' marker to predict longitudinal and subsequent survival outcomes, only the longitudinal information (i.e.,
+#' structure of the longitudinal data) is required. It is also possible to predict the average trajectories
+#' conditional on covariates by setting the value of the longitudinal outcomes included in the model to NA.
+#' @param timePoints a vector of the time points at which predictions are computed (for both longitudinal
+#' and survival outcomes), this also control the precision of the integration for time-dependent shared
+#' terms and the computation of cumulative risks (e.g., for survival or CIF curves), thus many time points
+#' will increase the accuracy of predictions. Default is NULL as these time points are automatically computed
+#' when not defined manually.
+#' @param NtimePoints number of time points at which the predictions are computed (for both longitudinal
+#' and survival outcomes), these time points are equidistant between time 0 and horizon time.
+#' This also control the precision of the integration for time-dependent shared
+#' terms and the computation of cumulative risks (e.g., for survival or CIF curves), thus many time points
+#' will increase the accuracy of predictions.
+#' @param strategy strategy to compute predictions. Only strategy 1 is implemented at the moment, soon
+#' more efficient strategies are going to be implemented to allow for large scale preeictions.
+#' @param Nsample number of samples for fixed effects and hyperparameters used to assess uncertainty
+#' when computing predictions. Default is 300.
+#' @param NsampleRE number of random effects realizations for each sample specified in 'Nsample'. These
+#' random effects realizations are conditional on observed longitudinal outcomes values provided in
+#' 'newData'. When outcomes are set to NA, the realizations are sampled from the marginal distribution
+#' of random effects.
+#' @param loopRE boolean with default to FALSE. When 'NsampleRE' and 'Nsample' are large, the amount of
+#' information to store in the random access memory of the computer can be large (creation of large matrices
+#' for the computation of predictions), turning this boolean to TRUE will decompose the computation of
+#' predictions to avoid reaching the limit of RAM of the computer (which would crash the program).
+#' @param id name of the individual id variable, default is NULL as it is automatically grabbed from the
+#' fitted model but when fitting simple survival models, providing id when fitting the model is not
+#' mandatory and thus this can be useful (an explicit message is printed in this specific case).
+#' @param Csurv conditional survival, gives the starting value of the at-risk period (i.e., starting value
+#' at which risk predictions for survival models are computed).
+#' Default is the last longitudinal observation time provided in 'newData' but this is
+#' replaced by the value of 'Csurv' when provided.
+#' @param horizon horizon of the prediction.
+#' @param baselineHaz method used to evaluate the baseline hazard value, default is 'interpolation'
+#' which is currently recommended. Experimental alternatives are being developed, including 'splines'
+#' for an interpolation with splines but has not been properly validated with simulations yet.
+#' @param return.samples boolean, when set to TRUE the samples are returned instead of summary
+#' statistics over the samples. Default is FALSE.
+#' @param survival boolean, when set to TRUE the summary statistics over survival functions are
+#' computed in addition to the summary statistics over the risk functions.
+#' @param CIF boolean, when set to TRUE the summary statistics over cumulative incidence functions are
+#' computed in addition to the summary statistics over the risk functions. Only applies to competing risks.
+#' @param inv.link boolean, when set to TRUE the summary statistics are computed over the predictions of
+#' longitudinal components after applying the inverse link function for each samples in addition to the
+#' summary statistics over the linear predictors.
+#' @param ... Extra arguments.
 #' @export
-# @import doFuture
-# @import foreach
-# @import doRNG
-# @import randtoolbox
 #' @importFrom Matrix bdiag Diagonal
 #' @importFrom methods new
 
-predict.INLAjoint <- function(object, newData, timePoints=NULL, NtimePoints=50, strategy=1,
-                              NsampleRE=50, loopRE=FALSE, Nsample=300, oldData=NULL, id=NULL, Csurv=NULL,
-                              horizon=NULL, baselineHaz="interpolation", Nthreads=NULL,
-                              return.samples=FALSE, parallel=FALSE, survival=FALSE, CIF=FALSE,
-                              inv.link=FALSE, ...){ # oldData is temporary
+predict.INLAjoint <- function(object, newData=NULL, timePoints=NULL, NtimePoints=50, strategy=1,
+                              Nsample=300, NsampleRE=50, loopRE=FALSE, id=NULL, Csurv=NULL,
+                              horizon=NULL, baselineHaz="interpolation", return.samples=FALSE,
+                              survival=FALSE, CIF=FALSE, inv.link=FALSE, ...){
+  arguments <- list(...)
   # id is the id column name in dataset for survival data only (otherwise it's given by longitudinal)
   # Csurv is to get predictions conditional on survival up to given time
   # strategy: 1=default ; 2=full sampling ; 3=update ; 4=analytical
+  if(is.null(newData)){ # if no new data is provided, return predicted fitted values
+    PRED <- object$summary.fitted.values
+    OUtc <- as.data.frame(object$.args$data$Yjoint)
+    PRED$Outcome <- sapply(1:dim(PRED)[1], function(x) colnames(OUtc)[which(!is.na(OUtc[x,]))])
+    return(PRED)
+  }
   if (!"INLAjoint" %in% class(object)){
     stop("Please provide an object of class 'INLAjoint' (obtained with joint() function).\n")
+  }
+  if (inherits(newData, "tbl_df") || inherits(newData, "tbl")) {
+    newData <- as.data.frame(newData)
   }
   # baselineHaz = "smooth" | "interpolation"
   out <- NULL
@@ -194,6 +255,11 @@ predict.INLAjoint <- function(object, newData, timePoints=NULL, NtimePoints=50, 
         }
       }
     }
+    if(strategy==2){
+      RE_values2 <- mvtnorm::rmvnorm(NsampleRE, sigma=solve(BD_Cmat))
+      RE_values <-t(sapply(1:nRE, function(x) RE_values2[, seq(x, Nsample*nRE, by=nRE)]))
+      # need to weight samples with probability density from observations!
+    }
     # RE_values2 <- mvtnorm::rmvnorm(NsampleRE, sigma=solve(BD_Cmat))
     # RE_values <-t(sapply(1:nRE, function(x) RE_values2[, seq(x, Nsample*nRE, by=nRE)]))
     ResErrFixed <- vector("list", K)
@@ -201,10 +267,12 @@ predict.INLAjoint <- function(object, newData, timePoints=NULL, NtimePoints=50, 
     posRE <- ct$start[sapply(REnames, function(x) which(ct$tag==x))]
     if(is_Surv){
       assocNs <- object$assoc
-      assocPos <- sapply(assocNs, function(x) which(ct$tag==x))
+      assocPos <- sapply(assocNs, function(x) grep(x, ct$tag))
       # identify the longitudinal needed for association
       # first identify shared part from longitudinal (no duplicates, so if CV from longitudinal 1 is shared twice, we need to repeat it)
-      outcomeAssoc <- names(object$.args$data$Yjoint)[which(substr(names(object$.args$data$Yjoint), 1, nchar(names(object$.args$data$Yjoint))-1) %in% ct2$tag)]
+      # outcomeAssoc <- names(object$.args$data$Yjoint)[which(substr(names(object$.args$data$Yjoint), 1, nchar(names(object$.args$data$Yjoint))-1) %in% ct2$tag)]
+      OutcNam <- substr(names(object$.args$data$Yjoint), 1, nchar(names(object$.args$data$Yjoint))-1)
+      outcomeAssoc <- names(object$.args$data$Yjoint)[unlist(sapply(1:length(OutcNam), function(x) if(length(grep(OutcNam[x], ct2$tag))!=0) return(x)))]
       outcomeAssoc2 <- sapply(outcomeAssoc, function(x) strsplit(x, split = "_S")[[1]][1])
       requiredAssoc <- sapply(assocNs, function(x) strsplit(x, split = "_S")[[1]][1])
       patternAsso <- unname(sapply(requiredAssoc, function(x) which(x==outcomeAssoc2)))
@@ -220,6 +288,13 @@ predict.INLAjoint <- function(object, newData, timePoints=NULL, NtimePoints=50, 
   for(idPred in unique(newData[, object$id])){
     message(paste0("Computing longitudinal predictions for individual ", idPred, " on PID: ", Sys.getpid()))
     ND <- newData[newData[, object$id] == idPred,] # select only one id at a time
+    if(!is.null(object$lonFacChar) & length(which(names(object$lonFacChar) %in% colnames(ND)))>0){
+      for(Fi in which(names(object$lonFacChar) %in% colnames(ND))){
+        # colClass <- apply(ND, 2, class)
+        ND[, which(colnames(ND)==names(object$lonFacChar)[Fi])] <- factor(sub("[^[:alnum:] ]","", ND[, which(colnames(ND)==names(object$lonFacChar)[Fi])]), levels=sub("[^[:alnum:] ]","", object$lonFacChar[[Fi]]))
+        # ND[, which(colnames(ND)==names(object$lonFacChar)[Fi])] <- factor(ND[, which(colnames(ND)==names(object$lonFacChar)[Fi])], levels=object$lonFacChar[[Fi]])
+      }
+    }
     if(is_Long & strategy==2){ # add time points at observed longi to compute density
       if(is.null(Csurv)){
         TPO <- sort(unique(c(timePoints, ND[, object$timeVar])))
@@ -270,6 +345,18 @@ predict.INLAjoint <- function(object, newData, timePoints=NULL, NtimePoints=50, 
     }
     LdataPred <- ND[rep(1, length(TPO)), ]
     LdataPred[, object$timeVar] <- TPO
+    # if(!is.null(object$lonFacChar) & length(which(names(object$lonFacChar) %in% colnames(LdataPred)))>0){
+    #   for(Fi in which(names(object$lonFacChar) %in% colnames(LdataPred))){
+    #     # colClass <- apply(LdataPred, 2, class)
+    #     LdataPred[, which(colnames(LdataPred)==names(object$lonFacChar)[Fi])] <- factor(LdataPred[, which(colnames(LdataPred)==names(object$lonFacChar)[Fi])], levels=object$lonFacChar[[Fi]])
+    #   }
+    # }
+    # if(!is.null(object$survFacChar) & length(which(names(object$survFacChar) %in% colnames(SdataPred)))>0){
+    #   for(Fi in which(names(object$survFacChar) %in% colnames(SdataPred))){
+    #     # colClass <- apply(SdataPred, 2, class)
+    #     SdataPred[, which(colnames(SdataPred)==names(object$survFacChar)[Fi])] <- factor(SdataPred[, which(colnames(SdataPred)==names(object$survFacChar)[Fi])], levels=object$survFacChar[[Fi]])
+    #   }
+    # }
     if(!is.null(object$dataLong)) assign(paste0(object$dataLong), LdataPred)
     if(!is.null(object$dataSurv) & is_Surv) assign(paste0(object$dataSurv), SdataPred)
     call.new2[[length(object$call)]] <- paste0(substr(object$call[[length(object$call)]],
@@ -285,7 +372,7 @@ predict.INLAjoint <- function(object, newData, timePoints=NULL, NtimePoints=50, 
       ### LONGITUDINAL ###
       ###              ###
       ctL <- ct
-      if(idPred %in% idVect & identical(ND[, object$timeVar], object$.args$data[[paste0(object$timeVar, "_L1")]][which(object$.args$data$IDIntercept_L1==idPred)])){
+      if(F){#idPred %in% idVect & identical(ND[, object$timeVar], object$.args$data[[paste0(object$timeVar, "_L1")]][which(object$.args$data$IDIntercept_L1==idPred)])){
         # no new data, we can use the current model as it is to predict over the timePoints
         LdataPred <- ND[rep(1, length(TPO)), ]
         LdataPred[, object$timeVar] <- TPO
@@ -376,16 +463,17 @@ predict.INLAjoint <- function(object, newData, timePoints=NULL, NtimePoints=50, 
         uData[-which(names(uData)==("Yjoint"))] <- sapply(uData[-which(names(uData)==("Yjoint"))], function(x) replace(x, is.na(x), 0), simplify=F)
         if(!is.list(uData)) uData <- as.list(as.data.frame(uData))
         nL_K <- length(uData[[1]])
+        # now we prepare the precision matrix for all samples (large block diagonal matrix)
+        IDshift <- 0
+        LengthUniqueID <- length(unique(na.omit(object$.args$data[[REnames[1]]])))
+        uData[REnames] <- uData[paste0("W", object$REstruc)]
         # A matrix for offset computation
         # ids to select the elements to keep in latent part of samples
         # baseline => substr(ct$tag, 1, 8)=="baseline" |
         A_off <- new("dgTMatrix", Dim=c(nL_K, sum(ct$length)))
         A_off[, ct$start[SMPsel]] <- do.call(cbind, uData[ct$tag[SMPsel]])
         offS <- (A_off %*% ParVal)@x # this is the offset used to evaluate the random effects
-        # now we prepare the precision matrix for all samples (large block diagonal matrix)
-        IDshift <- 0
-        LengthUniqueID <- length(unique(na.omit(object$.args$data[[REnames[1]]])))
-        uData[REnames] <- uData[paste0("W", object$REstruc)]
+
 
         #Cmatrix <- as.matrix(BD_Cmat) # can we use sparse matrix here??
         #Cmatrix <- Matrix(BD_Cmat, sparse=T) # can we use sparse matrix here??
@@ -396,7 +484,7 @@ predict.INLAjoint <- function(object, newData, timePoints=NULL, NtimePoints=50, 
           if(object$famLongi[k] %in% c("gaussian", "lognormal")){
             nL_k <- dim(ND)[1]
             posPrec <- which(substr(colnames(SMPH), 1, 18)=="Precision for the ")
-            ResErrScale[rep(((k_i-1)*nL_k + 1):((k_i-1)*nL_k + nL_k), Nsample)+rep(nL_k*K*((1:Nsample)-1), each=nL_k)] <- sqrt(1/rep(SMPH[, posPrec[k_i]], each=nL_k))
+            ResErrScale[rep(((k_i-1)*nL_k + 1):((k_i-1)*nL_k + nL_k), Nsample)+rep(nL_k*K*((1:Nsample)-1), each=nL_k)] <- rep(SMPH[, posPrec[k_i]], each=nL_k)
             k_i <- k_i+1
             ResErrFixed[[k]] <- list(hyper=list(prec=list(initial=0, fixed=TRUE)))
           }else{
@@ -475,23 +563,81 @@ predict.INLAjoint <- function(object, newData, timePoints=NULL, NtimePoints=50, 
           ParVal[posRE, ] <- RE_values
           LP_long <- t(as.matrix(INLA::inla.as.dgTMatrix(A_LP, na.rm=TRUE) %*% ParVal))
         }
+        LP_long_t <- NULL
         if(strategy==2){
+          errCT <- 1 # counter for error terms
           for(k in 1:K){
-            long_i_den <- NULL
-            if(object$famLongi[k]=="gaussian"){
-              long_i_mu <- LP_long[, indL][, which(rep(TPO, K) %in% ND[, object$timeVar])][,(k-1)*nL_k + 1:nL_k]
-              long_i_true <- ND[, object$longOutcome[k]]
-              ResErr_i <- rep(sqrt(1/SMPH[, posPrec[k]]), each=NsampleRE)
-              long_i_den = c(long_i_den, sapply(1:dim(long_i_mu)[1],
-                                  function(c) prod(mapply(function(x,y) dnorm(x, mean=y, sd=ResErr_i[c]),
-                                                                              x = long_i_true,
-                                                                              y = long_i_mu[c,])))) # sum the logs
+            if(!is.null(names(object$.args$data$Yjoint))){
+              k_id <- grep(object$longOutcome[k], names(object$.args$data$Yjoint))
+            }else{
+              k_id <- 1
             }
+            LP_long_k <- LP_long[, (1:NTP)+(k_id-1)*NTP]
+            long_i_den <- NULL
+            if(!(NA %in% ND[, object$longOutcome[k]])){
+              if(object$famLongi[k]=="gaussian"){
+                browser()
+                if(length(which(rep(TPO, K) %in% ND[, object$timeVar]))>1){
+                  long_i_mu <- LP_long_k[, which(TPO %in% ND[, object$timeVar])]
+                  long_i_true <- ND[, object$longOutcome[k]]
+                  ResErr_i <- rep(sqrt(1/SMPH[, posPrec[errCT]]), each=NsampleRE)
+                  long_i_den = c(long_i_den, sapply(1:dim(long_i_mu)[1],
+                                                    function(c) prod(mapply(function(x,y) dnorm(x, mean=y, sd=ResErr_i[c]),
+                                                                            x = long_i_true,
+                                                                            y = long_i_mu[c,])))) # sum the logs
+                  errCT <- errCT+1
+                }else{
+                  long_i_mu <- LP_long_k
+                  long_i_true <- ND[, object$longOutcome[k]]
+                  ResErr_i <- rep(sqrt(1/SMPH[, posPrec[errCT]]), each=NsampleRE)
+                  long_i_den = c(long_i_den, sapply(1:length(long_i_mu),
+                                                    function(c) prod(mapply(function(x,y) dnorm(x, mean=y, sd=ResErr_i[c]),
+                                                                            x = long_i_true,
+                                                                            y = long_i_mu[c])))) # sum the logs
+                  errCT <- errCT+1
+                }
+              }else if(object$famLongi[k]=="poisson"){
+                if(length(which(rep(TPO, K) %in% ND[, object$timeVar]))>1){
+                  long_i_mu <- LP_long_k[, which(TPO %in% ND[, object$timeVar])]
+                  long_i_true <- ND[, object$longOutcome[k]]
+                  long_i_den = c(long_i_den, sapply(1:dim(long_i_mu)[1],
+                                                    function(c) prod(mapply(function(x,y) dpois(x, lambda=exp(y)),
+                                                                            x = long_i_true,
+                                                                            y = long_i_mu[c,])))) # sum the logs
+                }else{
+                  long_i_mu <- LP_long_k
+                  long_i_true <- ND[, object$longOutcome[k]]
+                  long_i_den = c(long_i_den, sapply(1:length(long_i_mu),
+                                                    function(c) prod(mapply(function(x,y) dpois(x, lambda=exp(y)),
+                                                                            x = long_i_true,
+                                                                            y = long_i_mu[c])))) # sum the logs
+                }
+              }else if(object$famLongi[k]=="binomial"){
+                if(length(which(rep(TPO, K) %in% ND[, object$timeVar]))>1){
+                  long_i_mu <- LP_long_k[, which(TPO %in% ND[, object$timeVar])]
+                  long_i_true <- ND[, object$longOutcome[k]]
+                  long_i_den = c(long_i_den, sapply(1:dim(long_i_mu)[1],
+                                                    function(c) prod(mapply(function(x,y) dbinom(x, size=1, prob=exp(y)/(1+exp(y))),
+                                                                            x = long_i_true,
+                                                                            y = long_i_mu[c,])))) # sum the logs
+                }else{
+                  long_i_mu <- LP_long_k
+                  long_i_true <- ND[, object$longOutcome[k]]
+                  long_i_den = c(long_i_den, sapply(1:length(long_i_mu),
+                                                    function(c) prod(mapply(function(x,y) dbinom(x, size=1, prob=exp(y)/(1+exp(y))),
+                                                                            x = long_i_true,
+                                                                            y = long_i_mu[c])))) # sum the logs
+                }
+              }
+            }else{
+              long_i_den <- rep(1, dim(LP_long_k)[1])
+            }
+            long_i_den3 <- c(sapply(1:Nsample, function(x) long_i_den[(x-1)*NsampleRE + 1:NsampleRE]/sum(long_i_den[(x-1)*NsampleRE + 1:NsampleRE])))
+            # LP_long_save <- LP_long
+            LP_long[, (1:NTP)+(k_id-1)*NTP] <- LP_long_k*long_i_den3
           }
-          LP_long_save <- LP_long
-          A <- LP_long*long_i_den
-          LP_long <- t(sapply(1:Nsample, function(x) colSums(A[(x-1)*NsampleRE + 1:NsampleRE,])))
-          LP_long <- LP_long[rep(1:dim(LP_long)[1], each=NsampleRE),]
+          LP_long <- t(sapply(1:Nsample, function(x) colSums(LP_long[(x-1)*NsampleRE + 1:NsampleRE,])))
+          LP_long <- LP_long[rep(1:dim(LP_long)[1], each=NsampleRE),] # this may not be a good idea...
         }
         if(return.samples){
           RESpredL <- t(LP_long[, indL])
@@ -518,7 +664,6 @@ predict.INLAjoint <- function(object, newData, timePoints=NULL, NtimePoints=50, 
                                rep(object$longOutcome, each=NTP), RESpredL)
         colnames(newPredL) <- c(object$id, object$timeVar, "Outcome", addNamesL)
         # browser()
-
         predL <- rbind(predL, newPredL)
       }else if (strategy==4){
 
@@ -630,9 +775,42 @@ predict.INLAjoint <- function(object, newData, timePoints=NULL, NtimePoints=50, 
         }
       }else{
         # set up matrix to have shared part from longitudinal (LP_longs) scaled by association parameters (assocScaler)
-        if(is_Long) assocScaler <- sapply(assocNs, function(x) SMPH[, which(gsub("Beta for ", "", colnames(SMPH))==x)])[rep(1:Nsample, nsamplere), rep(1:length(assocPos), each=NTP2)]#[rep(1:NTP, M),]*kronecker(assocPoints, matrix(1, ncol=NTP, nrow=NTP))
-        if(is_Long) SASCP <- t(LP_longs * assocScaler)
-        if(is_Long) ParValS <- rbind(ParVal[1:(ct$start[assocPos][1]-1), rep(1:Nsample, nsamplere)], SASCP, ParVal[-c(1:(ct$start[assocPos][1] + sum(ct$length[assocPos]) -1)), rep(1:Nsample, nsamplere)]) else ParValS <- ParVal
+        if(is_Long){
+          SASCP <- NULL
+          for(ias in 1:length(assocNs)){
+            if(length(which(gsub("Beta for ", "", colnames(SMPH))==assocNs[ias]))>0){
+              # assocScaler <- sapply(assocNs, function(x) SMPH[, which(gsub("Beta for ", "", colnames(SMPH))==x)])[rep(1:Nsample, nsamplere), rep(1:length(assocPos), each=NTP2)]#[rep(1:NTP, M),]*kronecker(assocPoints, matrix(1, ncol=NTP, nrow=NTP))
+              assocScaler <- SMPH[, which(gsub("Beta for ", "", colnames(SMPH))==assocNs[ias])][rep(1:Nsample, nsamplere)]#[rep(1:NTP, M),]*kronecker(assocPoints, matrix(1, ncol=NTP, nrow=NTP))
+              SASCP_t <- t(LP_longs[, (1:NTP2)+(ias-1)*NTP2] * assocScaler)
+            }else if(length(which(gsub(" \\(scopy mean\\)", "", gsub("Beta0 for NL_", "", colnames(SMPH)))==assocNs[ias]))>0){
+              nb <- length(grep(assocNs[ias], colnames(SMPH)))
+              prop <- INLAjoint.scopy.define(nb)
+              k_NL <- as.integer(strsplit(strsplit(assocNs[ias], "_L")[[1]][2], "_S")[[1]][1])
+              if(length(grep("CV", assocNs[ias])>0)){
+                x_NLid <- grep(paste0("uv", k_NL), names(object$summary.random))
+              }else if(length(grep("CS", assocNs[ias])>0)){
+                x_NLid <- grep(paste0("us", k_NL), names(object$summary.random))
+              }else if(length(grep("SRE", assocNs[ias])>0)){
+                x_NLid <- grep(paste0("usre", k_NL), names(object$summary.random))
+              } # CV_CS not done here
+              xval <- object$summary.random[[x_NLid]]$mean
+              xx.loc <- min(xval) + (max(xval)-min(xval)) * (0:(nb - 1))/(nb - 1)
+              iterSMP <- 0 # keep track of RE samples
+              SASCP_t <- NULL
+              for(nsmp in 1:Nsample){
+                funNL <- splinefun(xx.loc, prop$W %*% SMPH[nsmp, grep(assocNs[ias], colnames(SMPH))], method = "natural")
+                SASCP_t <- cbind(SASCP_t, t(apply(LP_longs[(1:nsamplere)+(nsamplere*iterSMP), (1:NTP2)+(ias-1)*NTP2], 2, function(x) x*funNL(x))))
+                iterSMP <- iterSMP+1
+              }
+            }
+            SASCP <- rbind(SASCP, SASCP_t)
+          }
+          ParValS <- rbind(ParVal[1:(ct$start[assocPos][1]-1), rep(1:Nsample, nsamplere)], SASCP, ParVal[-c(1:(ct$start[assocPos][1] + sum(ct$length[assocPos]) -1)), rep(1:Nsample, nsamplere)])
+        }else{
+          ParValS <- ParVal
+        }
+        # if(is_Long) assocScaler <- sapply(assocNs, function(x) SMPH[, which(gsub("Beta for ", "", colnames(SMPH))==x)])[rep(1:Nsample, nsamplere), rep(1:length(assocPos), each=NTP2)]#[rep(1:NTP, M),]*kronecker(assocPoints, matrix(1, ncol=NTP, nrow=NTP))
+        # if(is_Long) SASCP <- t(LP_longs * assocScaler)
         LP_surv <- exp(t(as.matrix(INLA::inla.as.dgTMatrix(A_SP, na.rm=TRUE) %*% ParValS)))
       }
       if(return.samples){
