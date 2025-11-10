@@ -7,20 +7,26 @@
 \method{predict}{INLAjoint}(
   object,
   newData = NULL,
+  newDataSurv = NULL,
   timePoints = NULL,
   NtimePoints = 50,
-  strategy = 1,
-  Nsample = 300,
+  NsampleHY = 20,
+  NsampleFE = 20,
   NsampleRE = 50,
-  loopRE = FALSE,
   id = NULL,
   Csurv = NULL,
+  startTime = NULL,
   horizon = NULL,
   baselineHaz = "interpolation",
   return.samples = FALSE,
+  FEonly = FALSE,
   survival = FALSE,
   CIF = FALSE,
   inv.link = FALSE,
+  NidLoop = "auto",
+  resErrLong = FALSE,
+  set.samples = NULL,
+  silentMode = FALSE,
   ...
 )
 }
@@ -31,6 +37,9 @@
 marker to predict longitudinal and subsequent survival outcomes, only the longitudinal information (i.e.,
 structure of the longitudinal data) is required. It is also possible to predict the average trajectories
 conditional on covariates by setting the value of the longitudinal outcomes included in the model to NA.}
+
+\item{newDataSurv}{a dataset for survival information (only useful when both longitudinal and survival
+data are provided for the predictions, otherwise using the argument newData is working too).}
 
 \item{timePoints}{a vector of the time points at which predictions are computed (for both longitudinal
 and survival outcomes), this also control the precision of the integration for time-dependent shared
@@ -44,21 +53,19 @@ This also control the precision of the integration for time-dependent shared
 terms and the computation of cumulative risks (e.g., for survival or CIF curves), thus many time points
 will increase the accuracy of predictions.}
 
-\item{strategy}{strategy to compute predictions. Only strategy 1 is implemented at the moment, soon
-more efficient strategies are going to be implemented to allow for large scale preeictions.}
+\item{NsampleHY}{number of samples for hyperparameters used to assess uncertainty
+when computing predictions. Default is 20.}
 
-\item{Nsample}{number of samples for fixed effects and hyperparameters used to assess uncertainty
-when computing predictions. Default is 300.}
+\item{NsampleFE}{number of samples of fixed effects for each hyperparameters samples
+used to assess uncertainty when computing predictions. Default is 30 (i.e., 30 x NsampleHY).}
 
-\item{NsampleRE}{number of random effects realizations for each sample specified in 'Nsample'. These
-random effects realizations are conditional on observed longitudinal outcomes values provided in
-'newData'. When outcomes are set to NA, the realizations are sampled from the marginal distribution
-of random effects.}
-
-\item{loopRE}{boolean with default to FALSE. When 'NsampleRE' and 'Nsample' are large, the amount of
-information to store in the random access memory of the computer can be large (creation of large matrices
-for the computation of predictions), turning this boolean to TRUE will decompose the computation of
-predictions to avoid reaching the limit of RAM of the computer (which would crash the program).}
+\item{NsampleRE}{number of random effects realizations for each sample specified in 'NsampleHY' and
+'NsampleFE'. Default is 50 (i.e., 50 x NsampleFE x NsampleHY, resulting in 20000 random effects samples
+per new individual with default values). These random effects realizations are conditional on
+observed longitudinal outcomes values provided in 'newData' and survival time provided in 'newDataSurv'
+when a survival model is included. If 'newDataSurv' is NULL, they are conditional on
+survival up to latest longitudinal recorded measurement. When outcomes are
+set to NA, the realizations are sampled from the marginal distribution of random effects.}
 
 \item{id}{name of the individual id variable, default is NULL as it is automatically grabbed from the
 fitted model but when fitting simple survival models, providing id when fitting the model is not
@@ -69,6 +76,8 @@ at which risk predictions for survival models are computed).
 Default is the last longitudinal observation time provided in 'newData' but this is
 replaced by the value of 'Csurv' when provided.}
 
+\item{startTime}{define a starting time for predictions.}
+
 \item{horizon}{horizon of the prediction.}
 
 \item{baselineHaz}{method used to evaluate the baseline hazard value, default is 'interpolation'
@@ -77,6 +86,8 @@ for an interpolation with splines but has not been properly validated with simul
 
 \item{return.samples}{boolean, when set to TRUE the samples are returned instead of summary
 statistics over the samples. Default is FALSE.}
+
+\item{FEonly}{boolean, when set to TRUE, only fixed effects are involved for predictions computations.}
 
 \item{survival}{boolean, when set to TRUE the summary statistics over survival functions are
 computed in addition to the summary statistics over the risk functions.}
@@ -87,6 +98,17 @@ computed in addition to the summary statistics over the risk functions. Only app
 \item{inv.link}{boolean, when set to TRUE the summary statistics are computed over the predictions of
 longitudinal components after applying the inverse link function for each samples in addition to the
 summary statistics over the linear predictors.}
+
+\item{NidLoop}{Gives the number of individuals for which we compute predictions at once. For large number
+of individuals, this will loop over groups of 'NidLoop' individuals and could make predictions computations faster.}
+
+\item{resErrLong}{boolean, when set to TRUE the residual error for Gaussian or lognormal longitudinal
+outcomes is added to the uncertainty of predictions (default is FALSE which predicts the true underlying
+value of the longitudinal marker, i.e., error-free).}
+
+\item{set.samples}{replace random effects with pre-sampled values.}
+
+\item{silentMode}{a boolean that will stop printing messages during computations if turned to TRUE.}
 
 \item{...}{Extra arguments.}
 }

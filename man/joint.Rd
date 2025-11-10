@@ -22,6 +22,9 @@ joint(
   corRE = TRUE,
   dataOnly = FALSE,
   longOnly = FALSE,
+  silentMode = FALSE,
+  reorder = TRUE,
+  run = TRUE,
   control = list()
 )
 }
@@ -87,7 +90,7 @@ association between longitudinal and survival components or if there is no survi
 \item{assocSurv}{a boolean that indicates if a frailty term (i.e., random effect) from a survival model
 should be shared into another survival model. The order is important, the first model in the list of
 survival formulas (`formSurv`) should include a random effect and it can be shared in the next formulas.
-Multiple survival models with random effects can be accomodated and a random effect can be shared in
+Multiple survival models with random effects can be accommodated and a random effect can be shared in
 multiple survival models, following the same structure as `assoc` (i.e., vector of booleans if one random effect is
 shared in multiple survival and list of vectors if multiple survival models with random effects share
 their random effects in multiple survival models).}
@@ -105,6 +108,12 @@ diagonal variance-covariance). Default is FALSE.}
 \item{longOnly}{a boolean to only prepare the data for the longitudinal part of a longitudinal-survival joint model
 with the correct format without running the model.}
 
+\item{silentMode}{a boolean that will stop printing messages during computations if turned to TRUE.}
+
+\item{reorder}{a boolean used to prevent reordering of the data according to id.}
+
+\item{run}{a boolean used to setup a model without running INLA (allows to make modifications prior to run).}
+
 \item{control}{a list of control values that can be set with control=list(), with components: \describe{
 
   \item{\code{priorFixed}}{list with mean and standard deviations for the Gaussian prior distribution
@@ -119,7 +128,11 @@ with the correct format without running the model.}
   for the association of independent random effects ("SRE_ind" and survival frailty random effects shared).
   Default is \code{list(mean=0, prec=1)}}
   \item{\code{priorRandom}}{list with prior distribution for the multivariate random effects
-  (Inverse Wishart). Default is \code{list(r=10, R=1)}, see "inla.doc("iidkd") for more details.}
+  (Inverse Wishart). Default is \code{list(r=10, R=1). The default behavior automatically adapts the r to be equal to order + 1 if not manually specified, making the prior scaled to the dimension of the random effects.}, see "inla.doc("iidkd") for more details.}
+  \item{\code{priorFrailty}}{list with prior distribution for the frailty iid random effects
+  (Inverse Gamma). Default is \code{list(alpha=4, beta=1)}, see "inla.doc("iid123") for more details.}
+  \item{\code{priorRW}}{Vector for the Penalised Complexity prior of the log precision of random walk
+  baseline hazards. Default is a vector c(0.5, 0.01). See "inla.doc("RW1")" and "inla.doc("RW2") for more details.}
   \item{\code{initVC}}{list of the size of number of groups of random effects giving initial values for
   variance-covariance of random effects, first values are variance and then covariances (as displayed in summary).
   All the elements of the covariance matrix must be fixed but in case of multiple groups of random effects,
@@ -128,15 +141,20 @@ with the correct format without running the model.}
   (only one of these two arguments can be used).}
   \item{\code{strata}}{list of the same size as the number of survival submodels, giving the name of
   covariates for stratified proportional hazards model (default is NULL).}
+  \item{\code{Kinship}}{matrix for kinship frailty structure in survival models,
+  this must be the inverse of 2*kinship and only works when a frailty term is included in the model
+   (default is NULL).}
   \item{\code{fixRE}}{list of the size of number of groups of random effects, each element is a
   boolean indicating if the random effects of the group must be fixed or estimated.}
   \item{\code{assocInit}}{Initial value for all the association parameters (default is 0.1).}
-  \item{\code{int.strategy}}{a character string giving the strategy for the numerical integration
-  used to approximate the marginal posterior distributions of the latent field. Available options are
-  "ccd" (default), "grid" or "eb" (empirical Bayes). The empirical Bayes uses only the mode of the
+  \item{\code{int.strategy}}{a character string giving the strategy for the numerical integration over
+  the hyperparameters used to approximate the marginal posterior distributions of the latent field.
+  Available options are "auto" (default), "ccd", "grid" or "eb" (empirical Bayes).
+  The default strategy uses "grid" for dim<=2 and "ccd" otherwise.
+  The empirical Bayes uses only the mode of the
   approximations for the integration, which speed up and simplifies computations. It can be pictured as
   a tradeoff between Bayesian and frequentist estimation strategies while the default full Bayesian
-  accounts for uncertainty by using the mode and the curvature at the mode.}
+  accounts for uncertainty by using the mode and the curvature at the mode. See ?control.inla for additional details.}
   \item{\code{Ntrials}}{Number of trials for binomial and Betabinomial distributions, default is NULL.}
   \item{\code{cpo}}{TRUE/FALSE: Default is FALSE, set to TRUE to compute the Conditional Predictive Ordinate.}
   \item{\code{cfg}}{TRUE/FALSE: Default is FALSE, set to TRUE to be able to sample from the posterior
@@ -148,11 +166,18 @@ with the correct format without running the model.}
   of the hyperparameters and can be ignored. To remove this safe mode, switch the boolean to FALSE (it can
   save some computation time but may return slightly less precise estimates for some hyperparameters).
   }
+  \item{\code{n_NL}}{Number of knots for non-linear associations (random walk of order 2).}
+  \item{\code{NLpriorAssoc}}{Priors for non-linear effects, it is a list of 3 elements "mean", "slope"
+  and "spline", each element including 3 options: "mean", "prec" and "initial" for the mean, precision
+  of the prior and initial values.}
   \item{\code{rerun}}{TRUE/FALSE: the model reruns to improve numerical stability (default is FALSE).}
   \item{\code{tolerance}}{accuracy in the inner optimization (default is 0.005).}
   \item{\code{h}}{step-size for the hyperparameters (default is 0.005).}
   \item{\code{verbose}}{TRUE/FALSE: prints details of the INLA algorithm. Default is FALSE.}
   \item{\code{keep}}{TRUE/FALSE: keep internal files. Default is FALSE. (expert option)}
+  \item{\code{lightmode}}{Controls the amount of memory in the saved object. Default is 0 (save all),
+  when set to 1 a lighter version is saved but keeps required information for plot() and predict()
+  while when set to 2 the light version also removes .args and misc (for an even lighter object).}
 }}
 }
 \value{

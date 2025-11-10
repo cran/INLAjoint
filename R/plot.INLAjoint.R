@@ -35,6 +35,7 @@
 
 plot.INLAjoint <- function(x, ...) {
   arguments <- list(...)
+  if("run" %in% names(x)) if(!x$run) stop("Please run the model (with function `joint.run()`)")
   if(is.null(arguments$sdcor)) sdcor=F else sdcor=arguments$sdcor
   if(is.null(arguments$priors)) priors=F else priors=arguments$priors
   if(is.null(arguments$NL_fun)) NL_fun=F else priors=arguments$NL_fun
@@ -52,13 +53,17 @@ plot.INLAjoint <- function(x, ...) {
   ID <- NULL
   lower <- NULL
   upper <- NULL
+  group_factor <- NULL
+  fitted_lower <- NULL
+  fitted_upper <- NULL
+  fitted_mean <- NULL
   out <- list(
         Outcomes=NULL, Covariances=NULL,
         Associations=NULL, Baseline=NULL, Random=NULL)
   if(priors){
-    x.fixed.intercept.prior <- seq(x$priors_used$priorFixed$mean.intercept-2*sqrt(1/x$priors_used$priorFixed$prec.intercept),
-                                   x$priors_used$priorFixed$mean.intercept+2*sqrt(1/x$priors_used$priorFixed$prec.intercept), len=500)
-    fixed.intercept.prior <- dnorm(x.fixed.intercept.prior, x$priors_used$priorFixed$mean.intercept, sqrt(1/x$priors_used$priorFixed$prec.intercept))
+    x.fixed.intercept.prior <- seq(x$priors_used$priorFixed$mean-2*sqrt(1/x$priors_used$priorFixed$prec),
+                                   x$priors_used$priorFixed$mean+2*sqrt(1/x$priors_used$priorFixed$prec), len=500)
+    fixed.intercept.prior <- dnorm(x.fixed.intercept.prior, x$priors_used$priorFixed$mean, sqrt(1/x$priors_used$priorFixed$prec))
     x.fixed.prior <- seq(x$priors_used$priorFixed$mean-2*sqrt(1/x$priors_used$priorFixed$prec),
                              x$priors_used$priorFixed$mean+2*sqrt(1/x$priors_used$priorFixed$prec), len=500)
     fixed.prior <- dnorm(x.fixed.prior, x$priors_used$priorFixed$mean, sqrt(1/x$priors_used$priorFixed$prec))
@@ -155,9 +160,9 @@ plot.INLAjoint <- function(x, ...) {
                 rep(paste0(
                     'Baseline',
                     c('Var.', 'S.D.')[sdcor+1], '_S'), nhs)),
-                c(seq_len(nhl), seq_len(nhs)))[thMargs$m]
+                c(hl.jj, seq_len(nhs)))[thMargs$m]#seq_len(nhl)
           thMargs$Outcome <-
-              c(paste0(rep('L', nhl), seq_len(nhl)),
+              c(paste0(rep('L', nhl), hl.jj),#seq_len(nhl)
                 paste0(rep('S', nhs), seq_len(nhs))
                 )[thMargs$m]
           xMargs <- as.data.frame(rbind(
@@ -193,7 +198,8 @@ plot.INLAjoint <- function(x, ...) {
             xlab('') +
             ylab('Density') +
             geom_line() +
-            facet_wrap(~Effect, scales='free'))
+            facet_wrap(~Effect, scales='free') +
+            theme_minimal())
       }else{
         out$Outcomes <- lapply(
           split(xMargs, xMargs$Outcome), function(d)
@@ -201,7 +207,8 @@ plot.INLAjoint <- function(x, ...) {
             xlab('') +
             ylab('Density') +
             geom_line() +
-            facet_wrap(~Effect, scales='free'))
+            facet_wrap(~Effect, scales='free')+
+            theme_minimal())
       }
   }
   nhk <- length(hd.idx <- unique(c(grep('^Theta[0-9]+ for ', names(hid)), grep('Log precision for ID', names(hid)))))
@@ -270,13 +277,15 @@ plot.INLAjoint <- function(x, ...) {
                 xlab('') +
                 ylab('Density') +
                 geom_line(aes(color=type, linetype=group)) +
-                facet_wrap(~Effect, scales='free')
+                facet_wrap(~Effect, scales='free') +
+                theme_minimal()
             }else{
               out$Covariances[[l]] <- ggplot(kdens, aes(x=x,y=y)) +
                 xlab('') +
                 ylab('Density') +
                 geom_line(aes(color=type, linetype=type)) +
-                facet_wrap(~Effect, scales='free')
+                facet_wrap(~Effect, scales='free') +
+                theme_minimal()
             }
           } else {
             warning('Something wrong with', kid[k1], 'happened!')
@@ -318,13 +327,15 @@ plot.INLAjoint <- function(x, ...) {
               xlab('') +
               ylab('Density') +
               geom_line(aes(color=type, linetype=group)) +
-              facet_wrap(~Effect, scales='free')
+              facet_wrap(~Effect, scales='free') +
+              theme_minimal()
           }else{
             out$Covariances[[l]] <- ggplot(kdens, aes(x=x,y=y)) +
               xlab('') +
               ylab('Density') +
               geom_line(aes(color=type, linetype=type)) +
-              facet_wrap(~Effect, scales='free')
+              facet_wrap(~Effect, scales='free') +
+              theme_minimal()
           }
         }
 
@@ -348,7 +359,8 @@ plot.INLAjoint <- function(x, ...) {
         xlab('') +
         ylab('Density') +
         geom_line() +
-        facet_wrap(~Effect, scales='free')
+        facet_wrap(~Effect, scales='free') +
+        theme_minimal()
     }else{
       cMargs <- joinMarginals(
         x$internal.marginals.hyperpar[hc.idx])
@@ -358,14 +370,17 @@ plot.INLAjoint <- function(x, ...) {
         xlab('') +
         ylab('Density') +
         geom_line() +
-        facet_wrap(~Effect, scales='free')
+        facet_wrap(~Effect, scales='free') +
+        theme_minimal()
     }
   }
   rnames <- names(x$summary.random)
   nbas <- length(bas.idx <- grep(
       '^baseline[0-9]+', rnames))
   nbasP <- length(basP.idx <- c(grep("weibullsurv", unlist(x$basRisk)), # number of parametric baseline risks
-                                grep("exponentialsurv", unlist(x$basRisk))))
+                                grep("exponentialsurv", unlist(x$basRisk)),
+                                grep("dgompertzsurv", unlist(x$basRisk)),
+                                grep("gompertzsurv", unlist(x$basRisk))))
   if(nbas>0) {
     BaselineValues <- NULL
     for(i in 1:nbas){
@@ -417,7 +432,8 @@ plot.INLAjoint <- function(x, ...) {
           geom_line(aes(y=BaselineValues[,"mean"])) +
           xlab('Time') +
           ylab('Baseline risk') +
-          facet_wrap(~S,  scales='free')
+          facet_wrap(~S,  scales='free') +
+        theme_minimal()
   }
   # if exists NLcovName then look at vector NLassoc et Lassoc et pour chaque
   # TRUE in Lassoc check NL assoc et grab les parametres correspondants
@@ -447,23 +463,26 @@ plot.INLAjoint <- function(x, ...) {
       }else if(length(grep("SRE", effNL)>0)){
         x_NLid <- grep(paste0("usre", k_NL), names(x$summary.random))
       } # CV_CS not done here
+      # x_NLid <- grep(effNL, names(x$summary.random))
       xval <- x$summary.random[[x_NLid]]$mean# x$cov_NL[[k_NL]] #
       xval2 <- seq(min(xval), max(xval), len=1000)# seq(min(x$cov_NL[[k_NL]]), max(x$cov_NL[[k_NL]]), len=1000)
+      # xval2 <- seq(range(x$summary.random[[x_NLid2]]$mean), len=1000)# seq(min(x$cov_NL[[k_NL]]), max(x$cov_NL[[k_NL]]), len=1000)
       if(methodNL=="analytical"){
         stop("WIP")
-        sf_NL <- smooth.spline(xval, x$summary.random[[effNL]]$mean)
-        sfupp_NL <- smooth.spline(xval, x$summary.random[[effNL]]$'0.025quant')
-        sflow_NL <- smooth.spline(xval, x$summary.random[[effNL]]$'0.975quant')
-        # sfupp_NL <- smooth.spline(xval, x$summary.random[[effNL]]$mean+1.96*x$summary.random[[effNL]]$sd)
-        # sflow_NL <- smooth.spline(xval, x$summary.random[[effNL]]$mean-1.96*x$summary.random[[effNL]]$sd)
-        NL_data <- rbind(NL_data, cbind("x"=sf_NL$x,
-                                        "y"=sf_NL$y,
-                                        "upper"=sfupp_NL$y,
-                                        "lower"=sflow_NL$y, "Effect"=effNL))
+        # sf_NL <- smooth.spline(xval, x$summary.random[[effNL]]$mean)
+        # sfupp_NL <- smooth.spline(xval, x$summary.random[[effNL]]$'0.025quant')
+        # sflow_NL <- smooth.spline(xval, x$summary.random[[effNL]]$'0.975quant')
+        # # sfupp_NL <- smooth.spline(xval, x$summary.random[[effNL]]$mean+1.96*x$summary.random[[effNL]]$sd)
+        # # sflow_NL <- smooth.spline(xval, x$summary.random[[effNL]]$mean-1.96*x$summary.random[[effNL]]$sd)
+        # NL_data <- rbind(NL_data, cbind("x"=sf_NL$x,
+        #                                 "y"=sf_NL$y,
+        #                                 "upper"=sfupp_NL$y,
+        #                                 "lower"=sflow_NL$y, "Effect"=effNL))
 
       }else if(methodNL=="sampling"){
         nb <- length(grep(effNL, names(hid))) # number of splines parameters
-        xx.loc <- min(xval) + (max(xval)-min(xval)) * (0:(nb - 1))/(nb - 1)
+        # xx.loc <- min(xval) + (max(xval)-min(xval)) * (0:(nb - 1))/(nb - 1)
+        xx.loc <- x$range[[which(NLeff == effNL)]][1] + diff(x$range[[which(NLeff == effNL)]]) * seq(0, 1, len = nb)
         prop <- INLAjoint.scopy.define(nb)
         for(nsmp in 1:NsampleNL){
           # funNL <- splinefun(xx.loc, Hnl[nsmp, grep(effNL, names(hid))], method = "natural")
@@ -493,7 +512,6 @@ plot.INLAjoint <- function(x, ...) {
     #     lines(xHs[,i], xHs[,i]*vals, col=4, lty=2)
     #
     #     NL_data[, 1:4] <- apply(NL_data[, 1:4], 2, as.numeric)
-    #     browser()
     #     plot(NL_data$x, NL_data$y, type="o", pch=19)
     #     lines(NL_data$x, NL_data$lower, lty=2)
     #     lines(NL_data$x, NL_data$upper, lty=2)
@@ -511,7 +529,8 @@ plot.INLAjoint <- function(x, ...) {
       ylab('Effect') +
       geom_ribbon(aes(ymin = lower, ymax = upper), fill = "grey70")+
       geom_line() +
-      facet_wrap(~Effect, scales='free')
+      facet_wrap(~Effect, scales='free') +
+      theme_minimal()
   }
   if(nbasP>0){
     HW0 <- function(t, lambda, alpha){ # risk function Weibull variant 0 (also exponential for alpha=1)
@@ -519,6 +538,12 @@ plot.INLAjoint <- function(x, ...) {
     }
     HW1 <- function(t, lambda, alpha){ # risk function Weibull variant 1
       res = lambda*alpha*(lambda*t)^(alpha-1)
+    }
+    HG <- function(t, lambda, alpha){ # risk function Gompertz
+      res = lambda*alpha*exp(alpha*t)
+    }
+    HDG <- function(t, lambda, alpha){ # risk function Defective Gompertz
+      res = lambda*abs(alpha)*exp(abs(alpha)*t) / (exp(abs(alpha)*t) - 1 + exp(-lambda/abs(alpha)))
     }
     BHM <- NULL # baseline risk marginals
     nbl <- 1 # to keep track of baseline risk in case of multiple parametric survival outcomes
@@ -538,11 +563,14 @@ plot.INLAjoint <- function(x, ...) {
     for(i in 1:(nbas+nbasP)){
       if(i %in% basP.idx){
         # if(nbasP==1){
-        maxTime <- max(na.omit(x$.args$data$Yjoint[which(sapply(x$.args$data$Yjoint, class)=="inla.surv")][[ctBP]]$time))
+        if(length(x$.args$family)==1){
+          maxTime <- max(na.omit(x$.args$data$Yjoint$time))
+        }else{
+          maxTime <- max(na.omit(x$.args$data$Yjoint[which(sapply(x$.args$data$Yjoint, class)=="inla.surv")][[ctBP]]$time))
+        }
         # }else if(nbasP>1){
         #   maxTime <- max(na.omit(x$.args$data$Yjoint[which(sapply(x$.args$data$Yjoint, class)=="inla.surv")][[i]]$time))
         # }
-
         timePts <- seq(0, maxTime, len=500)
         timePts2 <- timePts#c(timePts[2], timePts[-1]) # avoid computing parametric baseline risk at time 0 since it's always 0
         Variant_i <- x$.args$control.family[[i]]$variant
@@ -566,9 +594,9 @@ plot.INLAjoint <- function(x, ...) {
           names(BHM)[nbl2+1] <- paste0("Weibull (shape)_S", i)
           if(x$.args$control.compute$config==TRUE){ # config set to TRUE then we can compute uncertainty
             if(Variant_i==0){
-              curves_SMP <- sapply(1:NSAMPLES, function(x) HW0(t=timePts2, lambda=exp(SAMPLES[[x]]$latent[nbl]), alpha=SAMPLES[[x]]$hyperpar[nbl]))
+              curves_SMP <- sapply(1:NSAMPLES, function(x) HW0(t=timePts2, lambda=exp(SAMPLES[[x]]$latent[nbl]), alpha=SAMPLES[[x]]$hyperpar[grep("weibull", names(SAMPLES[[x]]$hyperpar))][nbl]))
             }else if(Variant_i==1){
-              curves_SMP <- sapply(1:NSAMPLES, function(x) HW1(t=timePts2, lambda=exp(SAMPLES[[x]]$latent[nbl]), alpha=SAMPLES[[x]]$hyperpar[nbl]))
+              curves_SMP <- sapply(1:NSAMPLES, function(x) HW1(t=timePts2, lambda=exp(SAMPLES[[x]]$latent[nbl]), alpha=SAMPLES[[x]]$hyperpar[grep("weibull", names(SAMPLES[[x]]$hyperpar))][nbl]))
             }
             QUANT <- apply(curves_SMP, 1, function(x) quantile(x, c(0.025, 0.5, 0.975)))
             values_i <- t(QUANT)
@@ -591,8 +619,49 @@ plot.INLAjoint <- function(x, ...) {
             # }
           }
           name_i <- paste0("Weibull baseline risk (S", nbl, ")")
+        }else if(x$basRisk[[i]]=="gompertzsurv"){
+          BHM <- append(BHM, list(INLA::inla.tmarginal(function(x) exp(x),
+                                                 x$marginals.fixed[grep("Intercept_S", names(x$marginals.fixed))][[ctBP]])))
+          names(BHM)[nbl2] <- paste0("Gompertz (scale)_S", i)
+          BHM <- append(BHM, list(x$marginals.hyperpar[grep("alpha parameter for Gompertz-surv", names(x$marginals.hyperpar))][[nbl]]))
+          names(BHM)[nbl2+1] <- paste0("Gompertz (alpha)_S", i)
+          if(x$.args$control.compute$config==TRUE){ # config set to TRUE then we can compute uncertainty
+            curves_SMP <- sapply(1:NSAMPLES, function(x) HG(t=timePts2, lambda=exp(SAMPLES[[x]]$latent[nbl]),
+                                                            alpha=SAMPLES[[x]]$hyperpar[grep("alpha parameter for Gompertz-surv", names(SAMPLES[[x]]$hyperpar))][nbl]))
+            QUANT <- apply(curves_SMP, 1, function(x) quantile(x, c(0.025, 0.5, 0.975)))
+            values_i <- t(QUANT)
+          }else if(x$.args$control.compute$config=="lite"){
+            curves_SMP <- sapply(1:NSAMPLES, function(x) HG(t=timePts2, lambda=exp(SAMPLES$samples[,x])[grep(paste0("Intercept_S", nbl), names(SAMPLES$samples[,x]))],
+                                                            alpha=SAMPLESH[x,][grep("alpha parameter for Gompertz-surv", names(SAMPLESH[x,]))][nbl]))
+            QUANT <- apply(curves_SMP, 1, function(x) quantile(x, c(0.025, 0.5, 0.975)))
+            values_i <- t(QUANT)
+          }
+          name_i <- paste0("Gompertz baseline risk (S", nbl, ")")
+        }else if(x$basRisk[[i]]=="dgompertzsurv"){
+          BHM <- append(BHM, list(INLA::inla.tmarginal(function(x) exp(x),
+                                                 x$marginals.fixed[grep("Intercept_S", names(x$marginals.fixed))][[ctBP]])))
+          names(BHM)[nbl2] <- paste0("Defective Gompertz (scale)_S", i)
+          BHM <- append(BHM, list(x$marginals.hyperpar[grep("alpha parameter for dGompertz-surv", names(x$marginals.hyperpar))][[nbl]]))
+          names(BHM)[nbl2+1] <- paste0("Defective Gompertz (alpha)_S", i)
+          if(x$.args$control.compute$config==TRUE){ # config set to TRUE then we can compute uncertainty
+            curves_SMP <- sapply(1:NSAMPLES, function(x) HDG(t=timePts2, lambda=exp(SAMPLES[[x]]$latent[nbl]),
+                                                             alpha=SAMPLES[[x]]$hyperpar[grep("alpha parameter for dGompertz-surv", names(SAMPLES[[x]]$hyperpar))][nbl]))
+            QUANT <- apply(curves_SMP, 1, function(x) quantile(x, c(0.025, 0.5, 0.975)))
+            values_i <- t(QUANT)
+          }else if(x$.args$control.compute$config=="lite"){
+            curves_SMP <- sapply(1:NSAMPLES, function(x) HDG(t=timePts2, lambda=exp(SAMPLES$samples[,x])[grep(paste0("Intercept_S", nbl), names(SAMPLES$samples[,x]))],
+                                                             alpha=SAMPLESH[x,][grep("alpha parameter for dGompertz-surv", names(SAMPLESH[x,]))][nbl]))
+            QUANT <- apply(curves_SMP, 1, function(x) quantile(x, c(0.025, 0.5, 0.975)))
+            values_i <- t(QUANT)
+          }
+          name_i <- paste0("Defective Gompertz baseline risk (S", nbl, ")")
         }
-        nbl2 <- nbl2+2
+        # Increment counters based on number of parameters
+        if(x$basRisk[[i]]=="exponentialsurv"){
+          nbl2 <- nbl2+1  # exponential has only 1 parameter (rate)
+        }else{
+          nbl2 <- nbl2+2  # weibull, gompertz, dgompertz have 2 parameters (scale + shape/alpha)
+        }
         nbl <- nbl+1
         ctBP <- ctBP+1
         BaselineValuesP <- rbind(BaselineValuesP, data.frame(timePts, values_i, name_i)[-1,])
@@ -607,7 +676,8 @@ plot.INLAjoint <- function(x, ...) {
         geom_line(aes(x=x, y=y)) +
         xlab('Time') +
         ylab('Baseline risk') +
-        facet_wrap(~Effect,  scales='free')
+        facet_wrap(~Effect,  scales='free') +
+        theme_minimal()
     }else{ # only means
       # colnames(BaselineValues) <- c("x", "y", "Effect")
       # out$Baseline <- ggplot(BaselineValues, aes(x=x, y=y)) +
@@ -623,8 +693,197 @@ plot.INLAjoint <- function(x, ...) {
       xlab('') +
       ylab('Density') +
       geom_line() +
-      facet_wrap(~Effect, scales='free')
+      facet_wrap(~Effect, scales='free') +
+      theme_minimal()
   }
+
+  # RW2 trajectory plots
+  if(!is.null(x$rw2_info)) {
+    out$RW2_Trajectories <- list()
+
+    for(k in seq_along(x$rw2_info)) {
+      rw2_k <- x$rw2_info[[k]]
+      if(!is.null(rw2_k) && !is.null(rw2_k$group_map)) {
+        n_samples <- 1000
+
+        # Posterior samples
+        original_class <- class(x)
+        class(x) <- "inla"
+        samples <- tryCatch({
+          INLA::inla.posterior.sample(n_samples, x)
+        }, error = function(e) NULL)
+        class(x) <- original_class
+
+        if(!is.null(samples)) {
+          # Extract fixed effect samples
+          extract_fixed_effect <- function(samples, coef_name) {
+            latent_names <- rownames(samples[[1]]$latent)
+            full_name <- paste0(coef_name, ":1")
+            idx <- which(latent_names == full_name)
+            if (length(idx) == 0) return(rep(0, length(samples)))
+            sapply(samples, function(s) s$latent[idx[1], 1])
+          }
+
+          marker_suffix <- paste0("_L", k)
+          time_var <- rw2_k$time_var
+          n_groups <- rw2_k$n_groups
+          group_map <- rw2_k$group_map
+
+          # Get intercept samples
+          intercept_samp <- extract_fixed_effect(samples, paste0("Intercept", marker_suffix))
+
+          # Extract group-specific fixed effects from model
+          group_fixed_effects <- vector("list", n_groups)
+          for(g in seq_len(n_groups)) {
+            group_fixed_effects[[g]] <- rep(0, n_samples)
+          }
+
+          # Parse group expression to identify grouping variables
+          if(!is.null(rw2_k$group_expr)) {
+            group_expr <- rw2_k$group_expr
+            group_vars <- unique(unlist(strsplit(gsub("[*:()]", " ", group_expr), " ")))
+            group_vars <- group_vars[nchar(group_vars) > 0]
+
+            # Extract fixed effect samples for each grouping variable
+            var_samples <- list()
+            for(var in group_vars) {
+              var_cols <- grep(paste0("^", var, ".*", marker_suffix, "$"),
+                              names(x$marginals.fixed), value = TRUE)
+              if(length(var_cols) > 0) {
+                # Main effect
+                main_col <- var_cols[!grepl("\\.", var_cols)]
+                if(length(main_col) > 0) {
+                  var_samples[[var]]$main <- extract_fixed_effect(samples, main_col[1])
+                }
+                # Interaction effects
+                int_cols <- var_cols[grepl("\\.", var_cols)]
+                for(int_col in int_cols) {
+                  int_name <- gsub(marker_suffix, "", int_col)
+                  var_samples[[var]][[int_name]] <- extract_fixed_effect(samples, int_col)
+                }
+              }
+            }
+
+            # Compute group-specific fixed effects based on group labels
+            for(g in seq_len(n_groups)) {
+              label <- as.character(group_map$group_label[g])
+              # Parse label to identify which variables are active
+              for(var in names(var_samples)) {
+                if(!is.null(var_samples[[var]]$main) && grepl(var, label, fixed = TRUE)) {
+                  group_fixed_effects[[g]] <- group_fixed_effects[[g]] + var_samples[[var]]$main
+                }
+              }
+              # Add interaction terms if applicable
+              for(var in names(var_samples)) {
+                int_terms <- names(var_samples[[var]])[names(var_samples[[var]]) != "main"]
+                for(int_term in int_terms) {
+                  if(grepl(int_term, label, fixed = TRUE)) {
+                    group_fixed_effects[[g]] <- group_fixed_effects[[g]] + var_samples[[var]][[int_term]]
+                  }
+                }
+              }
+            }
+          }
+
+          # Extract RW2 components
+          configs <- x$misc$configs$contents
+          time_l_idx <- which(configs$tag == paste0(time_var, marker_suffix))
+
+          if(length(time_l_idx) > 0) {
+            time_l_start <- configs$start[time_l_idx]
+            time_l_length <- configs$length[time_l_idx]
+
+            rw_summary <- x$summary.random[[paste0(time_var, marker_suffix)]]
+            if ("ID" %in% colnames(rw_summary)) {
+              n_unique_times <- length(unique(rw_summary$ID))
+              if (time_l_length %% n_groups == 0) {
+                n_per_group <- time_l_length / n_groups
+              } else {
+                n_per_group <- n_unique_times
+              }
+              time_grid <- unique(rw_summary$ID)[seq_len(min(n_per_group, n_unique_times))]
+            } else {
+              n_per_group <- round(time_l_length / n_groups)
+              time_grid <- seq_len(n_per_group)
+            }
+            if(is.factor(time_grid)) time_grid <- as.character(time_grid)
+            time_grid <- as.numeric(time_grid)
+
+            # Compute trajectories: intercept + group fixed effects + RW2 component
+            traj_list <- vector("list", n_groups)
+            for(g in seq_len(n_groups)) {
+              traj_list[[g]] <- matrix(0, nrow = n_samples, ncol = n_per_group)
+            }
+
+            for (i in seq_len(n_samples)) {
+              rw_vals <- samples[[i]]$latent[time_l_start:(time_l_start + time_l_length - 1), 1]
+              for(g in seq_len(n_groups)) {
+                start_idx <- (g-1) * n_per_group + 1
+                end_idx <- g * n_per_group
+                rw_g <- rw_vals[start_idx:end_idx]
+                traj_list[[g]][i, ] <- intercept_samp[i] + group_fixed_effects[[g]][i] + rw_g
+              }
+            }
+
+            # Compute quantiles
+            compute_quantiles <- function(traj_matrix) {
+              list(
+                median = apply(traj_matrix, 2, median),
+                lower = apply(traj_matrix, 2, quantile, probs = 0.025),
+                upper = apply(traj_matrix, 2, quantile, probs = 0.975)
+              )
+            }
+
+            # Build plot data
+            plot_data_list <- vector("list", n_groups)
+            for(g in seq_len(n_groups)) {
+              quant_g <- compute_quantiles(traj_list[[g]])
+              plot_data_list[[g]] <- data.frame(
+                time = time_grid,
+                fitted_mean = quant_g$median,
+                fitted_lower = quant_g$lower,
+                fitted_upper = quant_g$upper,
+                group_label = group_map$group_label[g]
+              )
+            }
+
+            plot_data <- do.call(rbind, plot_data_list)
+            plot_data$group_factor <- factor(plot_data$group_label,
+                                             levels = unique(plot_data$group_label))
+
+            # Line types per group
+            n_linetypes <- length(unique(plot_data$group_factor))
+            linetypes <- c("solid", "dashed", "dotted", "dotdash", "longdash", "twodash")[1:n_linetypes]
+
+            p <- ggplot(plot_data, aes(x = time, color = group_factor, linetype = group_factor)) +
+              geom_line(aes(y = fitted_lower), linewidth = 0.5, alpha = 0.5) +
+              geom_line(aes(y = fitted_upper), linewidth = 0.5, alpha = 0.5) +
+              geom_line(aes(y = fitted_mean), linewidth = 1.2) +
+              scale_linetype_manual(values = linetypes) +
+              labs(
+                title = paste("RW2 Trajectories - Marker", k),
+                x = time_var,
+                y = "Fitted value",
+                color = "Group",
+                linetype = "Group"
+              ) +
+              theme_bw() +
+              theme(
+                legend.position = "bottom",
+                plot.title = element_text(hjust = 0.5, face = "bold")
+              )
+
+            out$RW2_Trajectories[[k]] <- p
+          }
+        }
+      }
+    }
+
+    if(length(out$RW2_Trajectories) == 0) {
+      out$RW2_Trajectories <- NULL
+    }
+  }
+
   out <- out[!sapply(out, is.null)]
   class(out) <- c("plot.INLAjoint", "list")
   return(out)

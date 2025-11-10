@@ -32,7 +32,7 @@ setup_S_model <- function(formula, formLong, dataSurv, LSurvdat, timeVar, assoc,
   YS <- strsplit(as.character(formula), split="~")[[2]]
   FE_formS <- nobars(formula)
   RES <- findbars(formula) # random effects included? (i.e., frailty)
-  YS_FE_elements <- gsub("\\s", "", strsplit(strsplit(as.character(FE_formS), split="~")[[3]], split=c("\\+"))[[1]])
+  # YS_FE_elements <- gsub("\\s", "", strsplit(strsplit(as.character(FE_formS), split="~")[[3]], split=c("\\+"))[[1]])
   FML <- ifelse(strsplit(as.character(FE_formS), split="~")[[3]]=="-1", 1, strsplit(as.character(FE_formS), split="~")[[3]])
   YSform2 <- formula(paste(" ~ ", FML))
   # if(length(which(sapply(dataSurv, class)=="factor"))>0){ # deal with factors when modalities are missing
@@ -41,6 +41,10 @@ setup_S_model <- function(formula, formLong, dataSurv, LSurvdat, timeVar, assoc,
   #     if(length(unique(dataSurv[, fctc]))< length(levels(dataSurv[, fctc]))) dataSurv[, fctc] <- as.integer(dataSurv[, fctc])-1
   #   }
   # }
+  # YS_FE_elements2 <- YS_FE_elements[YS_FE_elements!="1" & YS_FE_elements!="-1"]
+  if(length(all.vars(YSform2))>0){
+    sapply(all.vars(YSform2), function(x) if(!(x %in% colnames(dataSurv))) stop(paste0("Covariate `", x, "` not found in survival dataset!")))
+  }
   DFS <- model.matrix(YSform2, model.frame(YSform2, dataSurv, na.action=na.pass))
   if(colnames(DFS)[1]=="(Intercept)") colnames(DFS)[1] <- "Intercept"
   if(grepl("inla.surv", YS)){
@@ -63,11 +67,14 @@ setup_S_model <- function(formula, formLong, dataSurv, LSurvdat, timeVar, assoc,
     YS_data <- append(YS_data, list(dataSurv[, strata]))
     names(YS_data)[length(YS_data)] <- strata
   }
+  if(dataOnly & !is.null(id)){
+    if(all.equal(dataSurv[[id]], LSurvdat[[id]])!=TRUE) LSurvdat[[id]] <- dataSurv[[id]]
+  }
   # association
   if(length(assoc)!=0){
     YS_assoc <- unlist(assoc[1:K])[seq(m, K*M, by=M)] # extract K association terms associated to time-to-event m
     for(k in 1:length(YS_assoc)){
-      if(TRUE %in% (YS_assoc %in% c("CV", "CS", "CV_CS"))){
+      if(TRUE %in% (YS_assoc %in% c("CV", "CS", "CS2", "CV_CS"))){
         # add covariates that are being shared through the association
         FE_form <- nobars(formLong[[k]])
         if(dim(LSurvdat)[1] != dim(dataSurv)[1] & !F %in% c(rownames(attr(terms(FE_form), "factors")) %in% colnames(dataSurv))){
@@ -89,8 +96,16 @@ setup_S_model <- function(formula, formLong, dataSurv, LSurvdat, timeVar, assoc,
           names(DFS2) <- gsub(":", ".X.", gsub("\\s", ".", names(DFS2)))
           YS_data <- append(YS_data, DFS2)
         }
+        RW <- which(sapply(YS_data, length)[-1] != dim(dataSurv)[1])
+        # overwrite variables that are not properly captured
+        if(length(RW)>0 & (FALSE %in% c(YS_assoc=="CS"))){
+          for(RWi in 1:length(RW)){
+            if(length(unlist(sapply(colnames(dataSurv), function(x) grep(x, names(RW[RWi])))))==0) stop(paste0("I cannot find covariate '", names(RW[RWi]), "' in the survival dataset, \n while it is needed in the requested model (if '", names(RW[RWi]), "' is a \n time-dependent covariate, it needs to be included in the \n survival submodel manually to be properly handled through a \n decomposition of the followup with right censoring and left truncation)."))
+            YS_data[[RW[RWi]+1]] <- dataSurv[, which(sapply(sapply(colnames(dataSurv), function(x) grep(x, names(RW[RWi]))), length)!=0)]
+          }
+        }
       }
-      if(TRUE %in% (YS_assoc %in% c("SRE","SRE_ind", "CV", "CS", "CV_CS"))){
+      if(TRUE %in% (YS_assoc %in% c("SRE","SRE_ind", "CV", "CS", "CS2", "CV_CS"))){
         # add covariates from the random effects part shared and not already included
         RE <- findbars(formLong[[k]])
         RE_split <- gsub("\\s", "", strsplit(as.character(RE), split=c("\\|"))[[1]])
@@ -116,7 +131,7 @@ setup_S_model <- function(formula, formLong, dataSurv, LSurvdat, timeVar, assoc,
           YS_data <- append(YS_data, RE_mat)
         }
       }
-      if(YS_assoc[k]%in%c("CV", "CS")){ # one vector
+      if(YS_assoc[k]%in%c("CV", "CS", "CS2")){ # one vector
         assign(paste0(YS_assoc[k], "_L", k, "_S", m), c(as.integer(dataSurv[,id]))) # unique id set up after cox expansion
         YS_data <- append(YS_data, list(get(paste0(YS_assoc[k], "_L", k, "_S", m))))
         names(YS_data)[length(names(YS_data))] <- paste0(YS_assoc[k], "_L", k, "_S", m)
@@ -208,11 +223,59 @@ setup_FE_model <- function(formula, dataset, timeVar, k, dataOnly){
   #   }
   # }
   FE <- model.matrix(FE_form, model.frame(FE_form, dataset, na.action=na.pass))
+
+  # Fix factor handling when no intercept is present (-1 in formula)
+  # Check if formula has no intercept
+  has_intercept <- attr(terms(FE_form), "intercept") == 1
+
+  if (!has_intercept) {
+    # Get original data frame to identify factor variables
+    mf <- model.frame(FE_form, dataset, na.action=na.pass)
+
+    # Find factor variables in the original data
+    factor_vars <- names(mf)[sapply(mf, is.factor)]
+
+    # For each factor variable, check if all levels are included in model matrix
+    for (fvar in factor_vars) {
+      if (fvar %in% all.vars(FE_form)) {
+        factor_levels <- levels(mf[[fvar]])
+
+        # Only handle binary factors (most common case)
+        if (length(factor_levels) == 2) {
+          # Check if both factor levels appear as standalone columns (not in interactions)
+          factor_col_0 <- paste0(fvar, factor_levels[1])
+          factor_col_1 <- paste0(fvar, factor_levels[2])
+
+          if (factor_col_0 %in% colnames(FE) && factor_col_1 %in% colnames(FE)) {
+            # Check that these are main effect columns, not part of interactions
+            # Main effect columns should have simple names like "trt0", "trt1"
+            main_effect_cols <- c(factor_col_0, factor_col_1)
+
+            # Find which columns are main effects vs interactions
+            all_cols <- colnames(FE)
+            main_cols <- all_cols[!grepl(":", all_cols)]
+
+            # Only modify if both levels appear as main effects
+            if (all(main_effect_cols %in% main_cols)) {
+              # Remove the first level column (reference level)
+              cols_to_keep <- colnames(FE) != factor_col_0
+              FE <- FE[, cols_to_keep, drop = FALSE]
+            }
+          }
+        }
+      }
+    }
+  }
+
   #if(colnames(FE)[1]=="(Intercept)") colnames(FE)[1] <- "Intercept"
   colnames(FE) <- gsub(":", ".X.", gsub("\\s", ".", colnames(FE)))
   colnames(FE) <- sub("\\(","", colnames(FE))
   colnames(FE) <- sub(")","", colnames(FE))
-  return(list(colnames(FE), FE))
+  OFS <- model.offset(model.frame(FE_form, dataset, na.action=na.pass))
+  if(is.null(OFS)){
+    OFS <- rep(0, dim(FE)[1])
+  }
+  return(list(colnames(FE), FE, OFS))
 }
 
 #' Setup random effects part for longitudinal marker k
@@ -369,5 +432,41 @@ INLAjoint.ginv <- function (x, tol = sqrt(.Machine$double.eps), rankdef = NULL)
                                             t(xsvd$u[, Positive, drop = FALSE]))
   }
 }
+
+
+
+# RW2
+parse_rw2 <- function(formula) {
+  form_str <- deparse(formula, width.cutoff = 500L)
+  form_str <- paste(form_str, collapse = " ")
+
+  rw2_pattern <- "RW2\\s*\\(([^,]+),\\s*group\\s*=\\s*([^)]+)\\)"
+  has_rw2 <- grepl(rw2_pattern, form_str, perl = TRUE)
+
+  if (!has_rw2) {
+    return(list(has_rw2 = FALSE, time_var = NULL, group_expr = NULL,
+                clean_formula = formula))
+  }
+
+  matches <- regmatches(form_str, regexec(rw2_pattern, form_str, perl = TRUE))[[1]]
+  time_var <- trimws(matches[2])
+  group_expr <- trimws(matches[3])
+
+  # Replace RW2(TIME, group=...) with just TIME
+  # This keeps TIME in the formula for initial data processing
+  clean_str <- gsub(rw2_pattern, time_var, form_str, perl = TRUE)
+  clean_str <- gsub("\\s+", " ", clean_str)
+  clean_str <- trimws(clean_str)
+
+  clean_formula <- as.formula(clean_str)
+
+  return(list(
+    has_rw2 = TRUE,
+    time_var = time_var,
+    group_expr = group_expr,
+    clean_formula = clean_formula
+  ))
+}
+
 
 
