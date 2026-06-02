@@ -40,7 +40,7 @@
 #' @param Csurv conditional survival, gives the starting value of the at-risk period (i.e., starting value
 #' at which risk predictions for survival models are computed).
 #' Default is the last longitudinal observation time provided in 'newData' but this is
-#' replaced by the value of 'Csurv' when provided.
+#' replaced by the value of 'Csurv' when provided. Can be one value or one value per predicted id.
 #' @param startTime define a starting time for predictions.
 #' @param horizon horizon of the prediction.
 #' @param baselineHaz method used to evaluate the baseline hazard value, default is 'interpolation'
@@ -61,24 +61,30 @@
 #' @param resErrLong boolean, when set to TRUE the residual error for Gaussian or lognormal longitudinal
 #' outcomes is added to the uncertainty of predictions (default is FALSE which predicts the true underlying
 #' value of the longitudinal marker, i.e., error-free).
+#' @param return.RE boolean, when set to TRUE returns summary of random effects posterior distribution
+#' for each predicted individual. The summary is obtained from fitted random effects summaries
+#' across hyperparameter samples and includes mean, sd, mode and quantiles (0.025, 0.5, 0.975).
 #' @param set.samples replace random effects with pre-sampled values.
 #' @param silentMode a boolean that will stop printing messages during computations if turned to TRUE.
 #' @param ... Extra arguments.
 #' @export
 #' @importFrom Matrix bdiag Diagonal
 #' @importFrom methods new
+#' @importFrom stats density quantile sd
 
 predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints=NULL, NtimePoints=50,
                               NsampleHY=20, NsampleFE=20, NsampleRE=50, id=NULL, Csurv=NULL, startTime=NULL,
                               horizon=NULL, baselineHaz="interpolation", return.samples=FALSE, FEonly=FALSE,
                               survival=FALSE, CIF=FALSE, inv.link=FALSE, NidLoop="auto", resErrLong=FALSE,
-                              set.samples=NULL, silentMode=FALSE, ...){
+                              return.RE=FALSE, set.samples=NULL, silentMode=FALSE, ...){
   # idGroup: loop over groups over random effects (useful if scaling issues)
   arguments <- list(...)
   # id is the id column name in dataset for survival data only (otherwise it's given by longitudinal)
   # Csurv is to get predictions conditional on survival up to given time
   idLoop=FALSE
   REmsg <- TRUE
+  if(!is.logical(return.RE) | length(return.RE)!=1 | is.na(return.RE)) stop("Please provide a boolean value for 'return.RE'.")
+  REout <- list()
   if(exists("object$run")) if(!object$run) stop("Please run the model (with function `joint.run()`)")
   if(is.null(newData)){ # if no new data is provided, return predicted fitted values
     PRED <- object$summary.fitted.values
@@ -108,21 +114,28 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
   if(!"INLAjoint" %in% class(object)){
     stop("Please provide an object of class 'INLAjoint' (obtained with joint() function).\n")
   }
-  if(NidLoop=="auto"){ # define the size of groups for each iterations of inla.run.many() calls
-    # based on simulations, for simple to moderate models it is optimal to have a data size of ~12000
-    # for complex models (~6+ likelihoods), it is optimal to have ~20000
-    Nlik <- length(object$famLongi)+length(object$basRisk)
-    # get an estimate of average data size per individual from fitted model:
-    if(is.null(object$id)){
-      ADS_i <- NsampleFE
-    }else{
-      ADS_i <- length(object$.args$data[[1]])*NsampleFE/length(na.omit(unique(object$.args$data[[object$id]])))
-    }
-    if(Nlik<6){
-      NidLoop = round(12000 / ADS_i, 0)
-    }else{
-      NidLoop = round(20000 / ADS_i, 0)
-    }
+
+  # list$component
+  if(!is.null(object$dataSurv) && length(object$dataSurv)==3 && as.character(object$dataSurv[1])=="$"){
+    old_surv_ref <- paste0(as.character(object$dataSurv[2]), "$", as.character(object$dataSurv[3]))
+    object$call <- gsub(old_surv_ref, ".dataSurv_INLAjoint", object$call, fixed=TRUE)
+    object$dataSurv <- as.name(".dataSurv_INLAjoint")
+  }
+  if(!is.null(object$dataLong) && length(object$dataLong)==3 && as.character(object$dataLong[1])=="$"){
+    old_long_ref <- paste0(as.character(object$dataLong[2]), "$", as.character(object$dataLong[3]))
+    object$call <- gsub(old_long_ref, ".dataLong_INLAjoint", object$call, fixed=TRUE)
+    object$dataLong <- as.name(".dataLong_INLAjoint")
+  }
+
+  if(NidLoop=="auto"){
+    NidLoop <- 1L  # start with single-individual probe
+    NidLoop_probe <- TRUE
+  }else{
+    NidLoop_probe <- FALSE
+  }
+  if(!is.null(Csurv) && length(Csurv)>1){
+    NidLoop <- 1L
+    NidLoop_probe <- FALSE
   }
   # baselineHaz = "smooth" | "interpolation"
   out <- NULL
@@ -130,9 +143,15 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
   if(!is.null(id)) idname <- id else idname <- object$id
   if(!is.null(object$id)) id <- object$id else if(is.null(id)) stop("Please specify individual id column name with argument 'id'")
   is_Long <- is_Surv <- FALSE
-  idVect <- na.omit(unique(object$.args$data[[paste0("ID", object[["REstruc"]][[1]])]]))
-  if(!as.character(object["REstruc"])=="NULL"){
+  if(!is.null(object[["REstruc"]]) & length(object[["REstruc"]])>0){
+    idVect <- na.omit(unique(object$.args$data[[paste0("ID", object[["REstruc"]][[1]])]]))
     is_Long <- TRUE
+  }else if(!is.null(object[["famLongi"]])){
+    # long-only no RE
+    is_Long <- TRUE
+    idVect <- unique(newData[, object$id])
+  }else{
+    idVect <- NULL
   }
   if(!is.null(object$SurvInfo)){
     if(is.null(idVect) | length(idVect)==0){
@@ -180,11 +199,52 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
   if(!is_Long & !is_Surv) stop("Error, cannot recover ids from fitted model...")
   if(is_Surv & is.null(horizon)) stop("Please provide time horizon for prediction.")
   if(is_Surv & (length(horizon)>1 & length(horizon)!=length(unique(unique(newData[, object$id]))))) stop("Please provide either an unique horizon or a value for each id.")
+  if(is_Surv & !is.null(Csurv) & length(Csurv)>1 & length(Csurv)!=length(unique(unique(newData[, object$id])))) stop("Please provide either an unique Csurv or a value for each id.")
   predL <- NULL
   predS <- NULL
   newPredS <- NULL
   if(is.null(object$id) & !is.null(id)) object$id <- id
-  if(is.null(object$id)) stop("Please provide 'id' argument for new data.")
+  if(is.null(object$id)){
+    if(is_Surv & !is_Long){
+      # surv-only without id: treat each row as one individual
+      if(nrow(newData) > 1 && !silentMode) message("No 'id' provided, treating each row as a separate individual.")
+      newData$`_pred_id_` <- seq_len(nrow(newData))
+      object$id <- "_pred_id_"
+      id <- "_pred_id_"
+    }else{
+      stop("Please provide 'id' argument for new data.")
+    }
+  }
+  # normalize id column: ensure integer-like 1:n for internal use
+  id_lookup <- NULL
+  if(!is.null(object$id) && object$id %in% colnames(newData)){
+    id_vals <- newData[, object$id]
+    needs_norm <- is.factor(id_vals) || is.character(id_vals) ||
+      (is.numeric(id_vals) && (any(id_vals < 1, na.rm = TRUE) || any(id_vals != round(id_vals), na.rm = TRUE)))
+    if(needs_norm){
+      orig_levels <- unique(id_vals)
+      id_lookup <- setNames(as.character(orig_levels), seq_along(orig_levels))
+      has_RE <- !is.null(object[["REstrucS"]]) || !is.null(object[["REstruc"]])
+      if(has_RE){
+        # For models with random effects, normalize the id column in-place
+        # so formula references like (1|cluster) see valid integer indices.
+        # Don't create _pred_id_ to avoid column mismatch in joint() dataOnly.
+        newData[, id] <- match(as.character(id_vals), as.character(orig_levels))
+        if(!is.null(newDataSurv) && id %in% colnames(newDataSurv)){
+          newDataSurv[, id] <- match(as.character(newDataSurv[, id]), as.character(orig_levels))
+        }
+      }else{
+        # For models without RE, create a separate _pred_id_ column
+        # to avoid modifying covariate values when id column is also a covariate
+        newData$`_pred_id_` <- match(as.character(id_vals), as.character(orig_levels))
+        if(!is.null(newDataSurv) && object$id %in% colnames(newDataSurv)){
+          newDataSurv$`_pred_id_` <- match(as.character(newDataSurv[, object$id]), as.character(orig_levels))
+        }
+        object$id <- "_pred_id_"
+        id <- "_pred_id_"
+      }
+    }
+  }
   ct <- object$misc$configs$contents
   if(is.null(ct)) stop("Please add argument 'cfg=TRUE' in control options when fitting the INLAjoint model to enable predictions.")
   if(ct$tag[1] == "Predictor") {
@@ -208,7 +268,8 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
   }
   firstID <- unique(newData[, object$id])[1]
   if(!silentMode) message("Sample...")
-  SMPH <- INLA::inla.hyperpar.sample(NsampleHY, object)[rep(1:NsampleHY, each=NsampleFE),]
+  SMPH <- INLA::inla.hyperpar.sample(NsampleHY, object)[rep(1:NsampleHY, each=NsampleFE), , drop=FALSE]
+  if(!is.null(object$misc$from.theta) & !is.null(object$misc$theta.mode)) SMPH[1,] <- sapply(1:length(object$misc$theta.mode), function(i) object$misc$from.theta[[i]](object$misc$theta.mode[i]))
   SMP <- INLA::inla.rjmarginal(NsampleHY*NsampleFE, object)
   Nsample <- NsampleHY*NsampleFE
 
@@ -251,6 +312,41 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
   }
   nRE <- 0
   K <- 0 #number of longitudinal (written later, this is just to avoid errors when it is really 0)
+  # long-only no RE FE prediction
+  if(is_Long & !is_Surv & is.null(object[["REstruc"]])){
+    K <- length(object$famLongi)
+    # FE tags and positions
+    FE_tags <- ct$tag[which(ct$length==1 &
+                      (substr(ct$tag, nchar(ct$tag)-2, nchar(ct$tag)-1)=="_L" |
+                       substr(ct$tag, nchar(ct$tag)-3, nchar(ct$tag)-2)=="_L"))]
+    FE_pos <- ct$start[which(ct$tag %in% FE_tags)]
+    predL <- NULL
+    ids <- unique(newData[, object$id])
+    for(i in seq_along(ids)){
+      cur_id <- ids[i]
+      nd_i <- newData[newData[, object$id]==cur_id,, drop=FALSE]
+      # dummy outcome for dataOnly
+      outcName <- as.character(object$formLong[[1]][[2]])
+      if(!outcName %in% colnames(nd_i)) nd_i[[outcName]] <- 0
+      # design matrix via dataOnly
+      NEWdata <- joint(formLong=object$formLong, dataLong=nd_i, id=object$id,
+                       timeVar=object$timeVar, family=object$famLongi, dataOnly=TRUE,
+                       control=list(int.strategy="eb", cfg=TRUE), silentMode=TRUE)
+      # FE columns
+      FE_cols <- names(NEWdata)[names(NEWdata) %in% FE_tags]
+      if(length(FE_cols)==0) next
+      A_FE <- do.call(cbind, NEWdata[FE_cols])
+      FE_posM <- ct$start[which(ct$tag %in% FE_cols)]
+      # fitted = A_FE %*% beta
+      fitted_smp <- A_FE %*% ParVal[FE_posM,, drop=FALSE]
+      # Summarize
+      pred_i <- t(apply(fitted_smp, 1, SumStats))
+      colnames(pred_i) <- c("mean", "sd", "0.025quant", "0.5quant", "0.975quant")
+      pred_df <- data.frame(id=cur_id, time=nd_i[, object$timeVar], pred_i, row.names=NULL)
+      predL <- rbind(predL, pred_df)
+    }
+    return(list(predLong=predL))
+  }
   if(is_Long | !is.null(object[["REstrucS"]])){
     K <- length(object$famLongi) # number of longitudinal outcomes
     lenPV <- length(paramVal)
@@ -264,7 +360,7 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
     # Remove empty or invalid names
     spatial_hyperpar_names <- spatial_hyperpar_names[!is.na(spatial_hyperpar_names) & spatial_hyperpar_names != "" & !is.null(spatial_hyperpar_names)]
     # Create filtered REstruc and determine IID sampling strategy
-    if(length(spatial_hyperpar_names) > 0 && !is.null(object[["REstruc"]]) && length(object[["REstruc"]]) > 0) {
+    if(length(spatial_hyperpar_names) > 0 & !is.null(object[["REstruc"]]) & length(object[["REstruc"]]) > 0) {
       tryCatch({
         spatial_detection_results <- sapply(object[["REstruc"]], function(re) {
           if(is.null(re) || is.na(re) || re == "") return(FALSE)
@@ -349,11 +445,7 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
             current_res_for_k <- filtered_re_struc[which(substr(filtered_re_struc, nchar(filtered_re_struc)-2, nchar(filtered_re_struc))==paste0("_L", k) |
                                                            substr(filtered_re_struc, nchar(filtered_re_struc)-3, nchar(filtered_re_struc))==paste0("_L", k))]
 
-            if(length(current_res_for_k) == 0) {
-              # No filtered REs for this component, skip
-              next
-            }
-
+            if(length(current_res_for_k) > 0) {
             if(nRE_pk <= length(filtered_re_struc)) {
               PosH <- which(substr(NamesH, 1, 5)=="Theta" &
                               substr(NamesH, nchar(NamesH)-nchar(filtered_re_struc[nRE_pk])-1,
@@ -435,6 +527,7 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
             # fill BD_Cmat
             BD_Cmat[ind_BD_Cmat_k] <- c(SMP_prec_k)
             nRE_pk <- nRE_pk + nRE_k # go to next block
+            }
           }
         }
       }
@@ -470,7 +563,7 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
     ordRE <- order(order(ct$start[unlist(sapply(REnames, function(x) which(ct$tag==x)))]))
     assocNs <- object$assoc
     assocNa <- object$assoc_Names
-    if(is_Surv){
+    if(is_Surv & !return.RE){
       assocPos <- unlist(sapply(assocNs, function(x) grep(x, ct$tag)))
       # identify the longitudinal needed for association
       # first identify shared part from longitudinal (no duplicates, so if CV from longitudinal 1 is shared twice, we need to repeat it)
@@ -519,9 +612,33 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
   RErun_iter <- 0
   newRErun <- NULL
   reloadCT <- TRUE
+  NidLoop_probed <- FALSE
+  probe_phase <- 1L  # 1=single-id probe, 2=calibration batch, 3=calibrated
+  all_ids <- unique(newData[, object$id])
+  n_total <- length(all_ids)
+  n_done <- 0L
+  show_progress <- n_total >= 3 && !silentMode
+  # skip probe for surv-only without RE (no INLA loop to optimize)
+  if(NidLoop_probe && !is_Long && is.null(object[["REstrucS"]])){
+    NidLoop <- n_total
+    NidLoop_probe <- FALSE
+    probe_phase <- 3L
+    NidLoop_probed <- TRUE
+  }
+  # map idPred back to original label when id was normalized
+  .idLabel <- function(x) if(!is.null(id_lookup)) id_lookup[as.character(x)] else x
   horizonF <- horizon # keep it when horizon is a vector
+  CsurvF <- Csurv # keep it when Csurv is a vector
   for(idPred in unique(newData[, object$id])){
     ct2 <- ct
+    if(!is.null(CsurvF) && length(CsurvF)>1){
+      if(!is.null(names(CsurvF))){
+        Csurv <- unname(CsurvF[as.character(.idLabel(idPred))])
+      }else{
+        Csurv <- CsurvF[which(unique(newData[, object$id])==idPred)]
+      }
+      if(length(Csurv)!=1 || is.na(Csurv)) stop("Cannot match Csurv for id ", .idLabel(idPred), ".")
+    }
     if(length(horizonF)>1){ # horizon is different for each id
       horizon <- horizonF[which(unique(newData[, object$id])==idPred)]
       if(initTimePoints) NtimePoints <- length(timePoints)
@@ -529,11 +646,8 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
         timePoints <- seq(sTime, horizon, len=NtimePoints)
       }
     }
-    if(NidLoop=="auto"){
-      NidLoop <- 1
-    }
-    # split data to loop over groups of individuals
-    ND_split <- split(unique(newData[, object$id]), ceiling(seq_along(unique(newData[, object$id]))/NidLoop))
+    # split ids into groups
+    ND_split <- split(all_ids, ceiling(seq_along(all_ids)/NidLoop))
     ND_id <- unname(which(sapply(ND_split, function(x) idPred %in% x)))
     curID <- ND_split[[ND_id]]
     if(RErun_iter < ND_id){# need to estimate new RE posteriors?
@@ -543,9 +657,15 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
       newRErun <- FALSE
       RECOUNT_ <- RECOUNT_ + 1
     }
+    # After probe-induced batch regrouping, fix RECOUNT_ to actual position
+    if(newRErun && NidLoop_probe && probe_phase >= 2L){
+      RECOUNT_ <- which(curID == idPred)[1]
+    }
+    if(!(return.RE & !newRErun)){
     RErun_iter <- ND_id
     ND <- newData[newData[, object$id,] %in% ND_split[[ND_id]],,drop=FALSE]
     idPredt <- which(unique(ND[, object$id])==idPred)
+    idPredt_global <- which(all_ids == idPred)
     ND[, object$id] <- sapply(ND[, object$id], function(x) (1:length(unique(ND[, object$id])))[which(unique(ND[, object$id])==x)])
     if(!is.null(object$lonFacChar) & length(which(names(object$lonFacChar) %in% colnames(ND)))>0){
       for(Fi in which(names(object$lonFacChar) %in% colnames(ND))){
@@ -574,6 +694,7 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
     }
     call.new2 <- object$call
     TXT1 <- NULL
+    T_nam <- NULL
     if(is_Surv){
       if(is_Long & !is.null(newDataSurv)){
         if(NidLoop!=FALSE){
@@ -606,7 +727,7 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
               NDS <- cbind(NDS, 0)
               colnames(NDS)[length(colnames(NDS))] <- S_Outc
             }else if(!is.null(newDataSurv) & as.character(object$SurvInfo[[1]]$survOutcome) %in% colnames(newDataSurv)){ # condition on newDataSurv
-              NDS <- cbind(NDS, newDataSurv[, as.character(object$SurvInfo[[1]]$survOutcome)])
+              NDS <- cbind(NDS, newDataSurv[newDataSurv[, object$id] %in% curID, as.character(object$SurvInfo[[1]]$survOutcome)])
               colnames(NDS)[length(colnames(NDS))] <- S_Outc
             }else{
               NDS <- cbind(NDS, 0)
@@ -618,14 +739,12 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
               colTS <- which(colnames(ND) %in% unlist(sapply(object$SurvInfo, function(x) x$nameTimeSurv)))
               mTS <- max(ND[colTS])
             }else{
-              if(!is.null(newDataSurv) & as.character(object$SurvInfo[[1]]$nameTimeSurv) %in% colnames(newDataSurv)){
-                mTS <- newDataSurv[, as.character(object$SurvInfo[[1]]$nameTimeSurv)]
+              if(!is.null(Csurv)){
+                mTS <- Csurv
+              }else if(!is.null(newDataSurv) & as.character(object$SurvInfo[[1]]$nameTimeSurv) %in% colnames(newDataSurv)){
+                mTS <- newDataSurv[newDataSurv[, object$id] %in% curID, as.character(object$SurvInfo[[1]]$nameTimeSurv)]
               }else if(object$timeVar %in% colnames(ND)){
-                if(!is.null(Csurv)){
-                  mTS <- Csurv
-                }else{
-                  mTS <- ND[!duplicated(ND[[object$id]], fromLast = T), object$timeVar]
-                }
+                mTS <- ND[!duplicated(ND[[object$id]], fromLast = T), object$timeVar]
               }else{
                 mTS <- 0
               }
@@ -708,7 +827,7 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
                                        start=nchar(object[["REstrucS"]])-2,
                                        stop=nchar(object[["REstrucS"]]))))>0){
             assign(paste0(object$dataSurv)[m+1], SdataPred)
-          }else{ # only last line
+          }else{
             assign(paste0(object$dataSurv), SdataPred[nrow(SdataPred),])
           }
           assign(paste0(object$dataSurv), SdataPred)
@@ -757,6 +876,8 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
       # fix warning when assigning ctp to a vector of numerics instead of a name
       if(length(grep("control = list\\(", call.new2))>0){
         call.new2 <- gsub("control = list\\(", "control = list\\(cutpointsF = CTP,", call.new2)
+      }else if(length(grep("control\\s*=", call.new2))>0){
+        call.new2 <- gsub("control\\s*=\\s*([^,)]+)", "control = c(\\1, list(cutpointsF = CTP))", call.new2)
       }else{
         call.new2 <- paste0(substr(call.new2,
                                    start=1,
@@ -802,27 +923,32 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
       if(!is.null(object[["REstrucS"]]) | is_Surv){
         if(paste0(object$dataSurv)[1]=="list"){
           for(m in 1:(length(paste0(object$dataSurv))-1)){
-            if(length(grep(paste0("_S", m), substr(object[["REstrucS"]],
-                                                   start=nchar(object[["REstrucS"]])-2,
-                                                   stop=nchar(object[["REstrucS"]]))))>0){
-              assign(paste0(object$dataSurv)[m+1], NDS)
-            }else{ # only last line
-              assign(paste0(object$dataSurv)[m+1], NDS)
+            # Detect if this survival outcome is recurrent (has subject= in formula)
+            is_recurrent_m <- FALSE
+            if(!is.null(object$formSurv) && is.list(object$formSurv) && m <= length(object$formSurv)){
+              is_recurrent_m <- grepl("subject", deparse(object$formSurv[[m]][[2]]))
             }
+            if(!is_recurrent_m && any(duplicated(NDS[, object$id]))){
+              # Terminal event: deduplicate to 1 row per subject
+              NDS_m <- NDS[!duplicated(NDS[, object$id]), ]
+            }else{
+              NDS_m <- NDS
+            }
+            assign(paste0(object$dataSurv)[m+1], NDS_m)
           }
         }else{
-          if(length(grep("_S1", substr(object[["REstrucS"]],
-                                       start=nchar(object[["REstrucS"]])-2,
-                                       stop=nchar(object[["REstrucS"]]))))>0){
-            assign(paste0(object$dataSurv), NDS)
-          }else{ # only last line
-            assign(paste0(object$dataSurv), NDS)
-          }
+          assign(paste0(object$dataSurv), NDS)
         }
         call.new <- paste(object$call, collapse='')
         CTP <- object$.args$data$baseline1.hazard.values
-        if(length(grep("control = list\\(", call.new)>0)){
+        if(length(grep("control = list\\(", call.new))>0){
           call.new <- gsub("control = list\\(", "control = list\\(cutpointsF = CTP,", call.new)
+          call.new <- paste(substr(call.new,
+                                   start=1,
+                                   stop=nchar(call.new)-1),
+                            ", dataOnly=TRUE)", collapse='')
+        }else if(length(grep("control\\s*=", call.new))>0){
+          call.new <- gsub("control\\s*=\\s*([^,)]+)", "control = c(\\1, list(cutpointsF = CTP))", call.new)
           call.new <- paste(substr(call.new,
                                    start=1,
                                    stop=nchar(call.new)-1),
@@ -926,6 +1052,14 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
               nre_10p = 1
             }
             nre_pr <- c(length(grep(paste0("_S", nre_p), substr(object[["REstrucS"]], start=nchar(object[["REstrucS"]])-2-nre_10p, stop=nchar(object[["REstrucS"]]))))*length(unique(ND[,id])), nre_pr)
+          }
+          # update nre_prT to include survival frailty counts
+          nre_pr_surv <- nre_pr[1:length(object[["REstrucS"]])]
+          nre_pr_longi <- nre_pr[(length(object[["REstrucS"]])+1):length(nre_pr)]
+          if(object$corLong){
+            nre_prT <- c(nre_pr_surv, sum(nre_pr_longi))
+          }else{
+            nre_prT <- nre_pr
           }
         }else if(!is_Long & !is.null(object[["REstrucS"]])){
           if(length(object[["REstrucS"]]) != (length(SPLIT_n)-1) & length(SPLIT_n)>1) stop("I found a mismatch for some internal computations, please report to INLAjoint@gmail.com")
@@ -1047,10 +1181,17 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
           FRM3 <- paste(paste(sapply(1:(length(object$famLongi)+length(object[["REstrucS"]])), function(x) paste0(SPLIT_n[x], " n = ", nre_prT[x], ","), simplify=F), collapse=''), SPLIT_n[length(SPLIT_n)], collapse='')
         }
         call.new <- object$call
-        call.new[[length(object$call)]] <- paste0(substr(object$call[[length(object$call)]],
-                                                         start=1,
-                                                         stop=nchar(object$call[[length(object$call)]])-1),
-                                                  ", dataOnly=TRUE, longOnly=TRUE)")
+        if(!is.null(object[["REstrucS"]])){
+          call.new[[length(object$call)]] <- paste0(substr(object$call[[length(object$call)]],
+                                                           start=1,
+                                                           stop=nchar(object$call[[length(object$call)]])-1),
+                                                    ", dataOnly=TRUE)")
+        }else{
+          call.new[[length(object$call)]] <- paste0(substr(object$call[[length(object$call)]],
+                                                           start=1,
+                                                           stop=nchar(object$call[[length(object$call)]])-1),
+                                                    ", dataOnly=TRUE, longOnly=TRUE)")
+        }
       }
       uData <- eval(parse(text=call.new)) # updated data with INLAjoint format
       if(!("E..coxph" %in% names(uData))){
@@ -1063,8 +1204,10 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
       # A matrix for offset computation
       # ids to select the elements to keep in latent part of samples
       # baseline => substr(ct$tag, 1, 8)=="baseline" |
-      A_off <- new("dgTMatrix", Dim=c(nL_K, sum(ct$length)))
-      if(is_Long) A_off[, ct$start[SMPsel]] <- do.call(cbind, sapply(uData[ct$tag[SMPsel]], function(x) replace(x, is.na(x), 0), simplify=F))
+      A_off <- new("dgTMatrix", Dim=c(as.integer(nL_K), as.integer(sum(ct$length))))
+      if(is_Long){
+        A_off[, ct$start[SMPsel]] <- do.call(cbind, sapply(uData[ct$tag[SMPsel]], function(x) replace(x, is.na(x), 0), simplify=F))
+      }
       if(!is.null(object[["REstrucS"]]) | is_Surv){
         SMPselS <- which(ct$length==1 &
                            substr(ct$tag, nchar(ct$tag)-2, nchar(ct$tag)-1)=="_S" |
@@ -1088,8 +1231,8 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
             ParVal[ct$start[ct$tag==Nrsmp], ] <- set.samples[[rsmp]]
             ParValMode[ct$start[ct$tag==Nrsmp]] <- mean(set.samples[[rsmp]])
           }else{
-            ParVal[ct$start[ct$tag==Nrsmp], ] <- set.samples[[rsmp]][idPredt, ]
-            ParValMode[ct$start[ct$tag==Nrsmp]] <- mean(set.samples[[rsmp]][idPredt, ])
+            ParVal[ct$start[ct$tag==Nrsmp], ] <- set.samples[[rsmp]][idPredt_global, ]
+            ParValMode[ct$start[ct$tag==Nrsmp]] <- mean(set.samples[[rsmp]][idPredt_global, ])
           }
         }
         # need to remove the corresponding random effect from formula
@@ -1112,8 +1255,8 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
                 ParVal[ct2$start[m_intiCT], ] <- set.samples[[ias]] * SMPH[, m_inti]
                 ParValMode[ct2$start[m_intiCT]] <- mean(set.samples[[ias]] * SMPH[, m_inti])
               }else{
-                ParVal[ct2$start[m_intiCT], ] <- set.samples[[ias]][idPredt,] * SMPH[, m_inti]
-                ParValMode[ct2$start[m_intiCT]] <- mean(set.samples[[ias]][idPredt,] * SMPH[, m_inti])
+                ParVal[ct2$start[m_intiCT], ] <- set.samples[[ias]][idPredt_global,] * SMPH[, m_inti]
+                ParValMode[ct2$start[m_intiCT]] <- mean(set.samples[[ias]][idPredt_global,] * SMPH[, m_inti])
               }
             }
           }
@@ -1166,7 +1309,7 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
                                                        SMPH[1:(Nsample-1), grep(assocNs[a_id], colnames(SMPH))])[x])
             }
             # add it to offset
-            LPS_index <- which(!is.na(uData[[grep(paste0("^", assocNa[a_id], "$"), names(uData))]]))
+            LPS_index <- which(!is.na(uData[[grep(paste0("^", assocNs[a_id], "$"), names(uData))]]))
             offSet[LPS_index,] <- offSet[LPS_index, ] + LP_shsc
           }
         }
@@ -1215,7 +1358,7 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
                   # for(re_j in 1:nre_pr[re_i]){
                   if(!object$corLong){
                     if(object$corRE[[1]]!=TRUE | length(object$corRE)>1){
-                      if(object$corRE[[k]]!=TRUE){
+                      if(object$corRE[[re_i]]!=TRUE){
                         SEL <- append(SEL, list((1:length(unique(ND[,id])))))
                       }else{
                         SEL <- append(SEL, list((1:length(unique(ND[,id])))+length(unique(ND[,id]))*(re_j-1)))
@@ -1305,7 +1448,7 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
         TETA <- TETA[, seq(1, NsampleHY*NsampleFE, NsampleFE),drop=FALSE]
         offS_NEW <- matrix(NA, nrow = length(uData[[1]]), ncol=NsampleHY)
         for(n_HY in 1:NsampleHY){
-          offS_HY <- uData$off[ ,1:NsampleFE + rep((n_HY-1)*NsampleFE, NsampleFE)]
+          offS_HY <- uData$off[ ,1:NsampleFE + rep((n_HY-1)*NsampleFE, NsampleFE), drop=FALSE]
           if(is_Surv){
             for(m in 1:M){
               # set survival part of offset for each Hyperpar sample (NsampleHY)
@@ -1346,18 +1489,18 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
           }
         }
         uData$off <- offS_NEW
+        uData$off[is.na(uData$off)] <- 0
         # INLA::inla.tempdir()
         INLA::inla.setOption(malloc.lib='compiler')
         INLA::inla.setOption(INLAjoint.features=TRUE)
         object$.args$control.inla$compute.initial.values=FALSE
-        wd <- .inla_tempdir_safe()#"model.files"
+        wd <- INLA::inla.tempdir()#"model.files"
         # unlink(wd, recursive = TRUE)
         if(length(which(object$.args$control.predictor$link!=1))>0) warning("Link function is not default, this has to be added here and has not yet been done. Please contact INLAjoint@gmail.com")
-        if(!silentMode & REmsg) message("Estimate conditional posterior of random effects (N = ", length(unique(newData[, object$id])), ")...")
+        if(!silentMode & REmsg) message("Estimate conditional posterior of random effects (N = ", n_total, ")...")
         if(REmsg) REmsg <- FALSE
-        if(length(unique(newData[, object$id]))>=length(curID) & !silentMode & NidLoop>1) message(paste0("... id ", curID[1], " to ", tail(curID, 1), "..."))
-        if(length(unique(newData[, object$id]))>=length(curID) & !silentMode & NidLoop==1) message(paste0("... id ", curID[1], "..."))
         if(Nsample==1) TETA <- TETA[,1,drop=FALSE]
+        TETA <- as.matrix(TETA)
         # Filter TETA to remove spatial hyperparameters when set.samples is provided
         if(!is.null(set.samples)) {
           # Find indices of spatial hyperparameters in theta.tags
@@ -1399,7 +1542,7 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
             }
           }
         }
-        r <- INLA::inla(formula = formula(FRM3),
+        r0 <- INLA::inla(formula = formula(FRM3),
                   data = uData,
                   offset = uData$off,
                   E = uData$E..coxph,
@@ -1413,81 +1556,201 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
                                       # x = object$mode$x,
                                       fixed = TRUE,
                                       restart = FALSE),
-                  control.compute = list(return.marginals = FALSE, config=T),
+                  control.compute = list(return.marginals = return.RE, config=T),
                   control.inla = object$.args$control.inla,
                   quantiles = c(),
                   inla.call = "",
                   keep = TRUE,
                   safe = FALSE)
-        r <- .inla_run_many_safe(NsampleHY, wd, num.threads = object$.args$num.threads, cleanup = !TRUE, verbose = !TRUE)
+        if(NidLoop_probe && probe_phase < 3L) probe_t0 <- proc.time()
+        r <- INLA::inla.run.many(NsampleHY, wd, num.threads = object$.args$num.threads, cleanup = !TRUE, verbose = !TRUE)
+        if(return.RE & NsampleHY==1){
+          if(is.null(r[[1]]$summary.random) & !is.null(r0$summary.random)) r <- list(r0)
+        }
         INLA::inla.setOption(INLAjoint.features=FALSE)
         INLA::inla.setOption(malloc.lib='mi')
         unlink(wd, recursive = TRUE)
-        # Only sample IID random effects if there are any left after filtering spatial effects
-        if(length(SEL) > 0) {
-          RE_values <- do.call(cbind, sapply(1:NsampleHY, function(S) sapply(INLA::inla.posterior.sample(NsampleRE, r[[S]], selection=SEL), function(x) x$latent), simplify=F))
+        # Two-phase probe calibration for NidLoop
+        if(NidLoop_probe && probe_phase == 1L){
+          probe_t1 <- (proc.time() - probe_t0)[3]
+          probe_r1 <- nL_K
+          n_remaining <- n_total - 1L
+          if(n_remaining >= 3L){
+            # Choose calibration batch size based on per-id data weight
+            if(probe_r1 < 50) k_2 <- min(n_remaining, 10L)
+            else if(probe_r1 < 300) k_2 <- min(n_remaining, 5L)
+            else k_2 <- min(n_remaining, 3L)
+            NidLoop <- k_2
+            probe_phase <- 2L
+            RErun_iter <- 0L
+          }else{
+            NidLoop <- max(1L, n_remaining)
+            probe_phase <- 3L
+            NidLoop_probed <- TRUE
+            RErun_iter <- 0L
+          }
+        }else if(NidLoop_probe && probe_phase == 2L){
+          probe_t2 <- (proc.time() - probe_t0)[3]
+          probe_n2 <- length(curID)
+          # Two-point power-law calibration: t(n) = C0 + C1 * n^beta
+          beta_exp <- 1.3
+          denom <- probe_n2^beta_exp - 1
+          if(denom > 0 && probe_t2 > 0){
+            C1_est <- (probe_t2 - probe_t1) / denom
+            C0_est <- probe_t1 - C1_est
+            if(C0_est > 0 && C1_est > 0){
+              n_opt <- (C0_est / ((beta_exp - 1) * C1_est))^(1/beta_exp)
+              NidLoop <- max(1L, round(n_opt))
+            }else{
+              # Overhead negligible or noise, compare per-id costs
+              cost1 <- probe_t1
+              cost2 <- probe_t2 / probe_n2
+              if(cost2 < cost1 * 0.7){
+                NidLoop <- max(1L, round(probe_n2 * sqrt(cost1/cost2)))
+              }else{
+                NidLoop <- max(1L, probe_n2)
+              }
+            }
+          }else{
+            NidLoop <- 1L
+          }
+          NidLoop <- min(NidLoop, n_total)
+          probe_phase <- 3L
+          NidLoop_probed <- TRUE
+          RErun_iter <- 0L
+        }
+        if(return.RE){
+            vec_stats <- function(x){
+              x <- as.numeric(x)
+              x <- x[is.finite(x)]
+              if(length(x) == 0){
+                return(c(mean = NA_real_, sd = NA_real_, q025 = NA_real_, q50 = NA_real_, q975 = NA_real_, mode = NA_real_))
+              }
+              q <- quantile(x, probs = c(0.025, 0.5, 0.975), na.rm = TRUE, names = FALSE)
+              if(length(unique(x)) > 1){
+                d <- density(x, na.rm = TRUE)
+                mode_x <- d$x[which.max(d$y)]
+              }else{
+                mode_x <- x[1]
+              }
+              c(mean = mean(x), sd = sd(x), q025 = q[1], q50 = q[2], q975 = q[3], mode = mode_x)
+            }
+            RE_samp <- list()
+            if(length(SEL) > 0){
+              sel_names <- names(SEL)
+              if(is.null(sel_names)) sel_names <- paste0("RE", seq_along(SEL))
+              sel_names <- gsub("^ID", "", sel_names)
+              for(S in 1:NsampleHY){
+                smpS <- INLA::inla.posterior.sample(NsampleRE, r[[S]], selection=SEL)
+                for(ss in 1:length(smpS)){
+                  lat <- as.numeric(smpS[[ss]]$latent)
+                  p0 <- 0
+                  for(ee in 1:length(SEL)){
+                    n_ee <- length(SEL[[ee]])
+                    if(n_ee == 0) next
+                    idx <- (p0 + 1):(p0 + n_ee)
+                    if(max(idx) > length(lat)) break
+                    val_ee <- lat[idx]
+                    p0 <- p0 + n_ee
+                    id_map <- ((as.integer(SEL[[ee]]) - 1) %% length(curID)) + 1
+                    for(ii in 1:n_ee){
+                      KEY <- paste0(as.character(curID[id_map[ii]]), "||", sel_names[ee])
+                      RE_samp[[KEY]] <- c(RE_samp[[KEY]], val_ee[ii])
+                    }
+                  }
+                }
+              }
+            }
+            if(length(RE_samp) > 0){
+              RE_keys <- names(RE_samp)
+              RE_split <- strsplit(RE_keys, "\\|\\|")
+              RE_id <- sapply(RE_split, function(x) x[1])
+              RE_eff <- sapply(RE_split, function(x) x[2])
+              for(idk in unique(RE_id)){
+                eID <- which(RE_id == idk)
+                EFF <- unique(RE_eff[eID])
+                TMP <- NULL
+                for(ef in EFF){
+                  key_ef <- paste0(idk, "||", ef)
+                  ST <- vec_stats(RE_samp[[key_ef]])
+                  TMP <- rbind(TMP, data.frame(effect = ef, t(ST), stringsAsFactors = FALSE))
+                }
+                rownames(TMP) <- TMP$effect
+                TMP$effect <- NULL
+                TMP <- as.data.frame(TMP, stringsAsFactors = FALSE)
+                TMP <- TMP[, c("mean", "sd", "q025", "q50", "q975", "mode"), drop = FALSE]
+                REout[[as.character(idk)]] <- TMP
+              }
+            }
         }else{
-          # No IID random effects to sample - all effects are spatial
-          RE_values <- NULL
-        }
-        # Process IID random effects only if they exist
-        if(!is.null(RE_values)) {
-          if(!object$corLong){
-            NRE_i <- length(SEL) # number of random effects
+          # Only sample IID random effects if there are any left after filtering spatial effects
+          if(length(SEL) > 0) {
+            RE_values <- do.call(cbind, sapply(1:NsampleHY, function(S) sapply(INLA::inla.posterior.sample(NsampleRE, r[[S]], selection=SEL), function(x) x$latent), simplify=F))
           }else{
-            NRE_i <- length(c(object[["REstruc"]], object[["REstrucS"]])) # number of random effects
+            # No IID random effects to sample - all effects are spatial
+            RE_values <- NULL
           }
-          NRE_ii <- (dim(RE_values)[1]/NRE_i)/NsampleFE # number of individuals
-          id_REV <- data.frame(sapply(1:NsampleFE, function(x) rep(1:NRE_ii, NRE_i) + rep((0:(NRE_i-1))*(NRE_ii*NsampleFE), each=NRE_ii) + rep(NRE_ii*(x-1), (NRE_ii*NRE_i))))
-          RE_values <- do.call(cbind, apply(RE_values, 2, function(x) apply(id_REV, 2, function(xx) x[xx]), simplify=F))
-          if((NRE_ii + NRE_i)==2 & is_Surv & !is_Long){ # just one vector (may need to adapt for random intercept longitudinal?)
-            RE_values <- c(RE_values)
-          }
-        }
-        # Only process IID random effects if they exist
-        if(!is.null(RE_values)) {
-          # Make grep results robust to handle empty matches
-          grep_results <- sapply(c(names_reS, names_reL), function(x) {
-            result <- grep(paste0("\\b",x, "\\b"), ct$tag)
-            if(length(result) == 0) return(NA) else return(result[1])
-          }, USE.NAMES = FALSE)
-          if(NRE_ii>1) RE_values <- RE_values[c(sapply(1:(length(unique(ND[,id]))/NsampleFE), function(x) rep(1, NRE_i)+(length(unique(ND[,id]))/NsampleFE)*(seq(1, NRE_i)-1)+(which(unique(ND[,id]) == x)-1))),]
-        }
-        if(idPredt!=1) idLoopSet <- FALSE else idLoopSet <- TRUE
-        if(idLoopSet){ # save all random effects before selecting for each individuals
+          # Process IID random effects only if they exist
           if(!is.null(RE_values)) {
-            RE_valuesG <- RE_values
-          }else{
-            # No IID effects sampled via INLA (either no RE or all spatial)
-            # Initialize RE_valuesG as an empty matrix to prevent "object not found" errors
-            RE_valuesG <- matrix(numeric(0), nrow=0, ncol=0)
+            if(!object$corLong){
+              NRE_i <- length(SEL) # number of random effects
+            }else{
+              NRE_i <- length(c(object[["REstruc"]], object[["REstrucS"]])) # number of random effects
+            }
+            NRE_ii <- (dim(RE_values)[1]/NRE_i)/NsampleFE # number of individuals
+            id_REV <- data.frame(sapply(1:NsampleFE, function(x) rep(1:NRE_ii, NRE_i) + rep((0:(NRE_i-1))*(NRE_ii*NsampleFE), each=NRE_ii) + rep(NRE_ii*(x-1), (NRE_ii*NRE_i))))
+            RE_values <- do.call(cbind, apply(RE_values, 2, function(x) apply(id_REV, 2, function(xx) x[xx]), simplify=F))
+            if((NRE_ii + NRE_i)==2 & is_Surv & !is_Long){ # just one vector (may need to adapt for random intercept longitudinal?)
+              RE_values <- c(RE_values)
+            }
           }
-        }
-        if(!is.null(RE_values) && !is.null(RE_valuesG)){ # Only process if IID effects exist
-          Nreps <- trunc(Nsample/Nsample)
-          Nadds <- (Nsample %% Nsample)/Nsample
-          if(is.null(dim(RE_values))){
-            if(Nadds==0){
-              AD_re <- NULL
-            }else if(Nadds>0){
-              AD_re <- trunc(1:(length(RE_values)*Nadds))
+          # Only process IID random effects if they exist
+          if(!is.null(RE_values)) {
+            # Make grep results robust to handle empty matches
+            grep_results <- sapply(c(names_reS, names_reL), function(x) {
+              result <- grep(paste0("\\b",x, "\\b"), ct$tag)
+              if(length(result) == 0) return(NA) else return(result[1])
+            }, USE.NAMES = FALSE)
+            if(NRE_ii>1) RE_values <- RE_values[c(sapply(1:(length(unique(ND[,id]))/NsampleFE), function(x) rep(1, NRE_i)+(length(unique(ND[,id]))/NsampleFE)*(seq(1, NRE_i)-1)+(which(unique(ND[,id]) == x)-1))),]
+          }
+          if(idPredt!=1) idLoopSet <- FALSE else idLoopSet <- TRUE
+          # After probe-induced regrouping, ensure RE_valuesG is updated for new batch
+          if(newRErun && NidLoop_probe && probe_phase >= 2L) idLoopSet <- TRUE
+          if(idLoopSet){ # save all random effects before selecting for each individuals
+            if(!is.null(RE_values)) {
+              RE_valuesG <- RE_values
+            }else{
+              # No IID effects sampled via INLA (either no RE or all spatial)
+              # Initialize RE_valuesG as an empty matrix to prevent "object not found" errors
+              RE_valuesG <- matrix(numeric(0), nrow=0, ncol=0)
             }
-            RE_values <- RE_values[c(rep(1:length(RE_values), Nreps), AD_re)]
-            RE_valuesG <- RE_valuesG[c(rep(1:length(RE_valuesG), Nreps), AD_re)]
-          }else{
-            if(Nadds==0){
-              AD_re <- NULL
-            }else if(Nadds>0){
-              AD_re <- trunc(1:(ncol(RE_values)*Nadds))
+          }
+          if(!is.null(RE_values) && !is.null(RE_valuesG)){ # Only process if IID effects exist
+            Nreps <- trunc(Nsample/Nsample)
+            Nadds <- (Nsample %% Nsample)/Nsample
+            if(is.null(dim(RE_values))){
+              if(Nadds==0){
+                AD_re <- NULL
+              }else if(Nadds>0){
+                AD_re <- trunc(1:(length(RE_values)*Nadds))
+              }
+              RE_values <- RE_values[c(rep(1:length(RE_values), Nreps), AD_re)]
+              RE_valuesG <- RE_valuesG[c(rep(1:length(RE_valuesG), Nreps), AD_re)]
+            }else{
+              if(Nadds==0){
+                AD_re <- NULL
+              }else if(Nadds>0){
+                AD_re <- trunc(1:(ncol(RE_values)*Nadds))
+              }
+              RE_values <- RE_values[, c(rep(1:ncol(RE_values), Nreps), AD_re)]
+              RE_valuesG <- RE_valuesG[, c(rep(1:ncol(RE_valuesG), Nreps), AD_re)]
             }
-            RE_values <- RE_values[, c(rep(1:ncol(RE_values), Nreps), AD_re)]
-            RE_valuesG <- RE_valuesG[, c(rep(1:ncol(RE_valuesG), Nreps), AD_re)]
           }
         }
       }else if(!exists("RE_valuesG")){
         RE_valuesG <- NULL
       }
-      if(is_Long){
+      if(is_Long & !return.RE){
         # Handle spatial random effects with set.samples
         RE_valuesSpatial <- NULL
         if(!is.null(set.samples)){
@@ -1496,7 +1759,7 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
             if(is.null(dim(set.samples[[rsmp]]))){ # needs to be polished to fit more models
               RE_valuesSpatial <- rep(set.samples[[rsmp]], NsampleRE) # Store spatial values separately
             }else{
-              RE_valuesSpatial <- rep(set.samples[[rsmp]][idPredt,], NsampleRE)
+              RE_valuesSpatial <- rep(set.samples[[rsmp]][idPredt_global,], NsampleRE)
             }
           }
           # Only overwrite RE_valuesG if there are NO IID random effects (only spatial)
@@ -1508,20 +1771,29 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
         }
         if(!idLoop){
           # Only process RE_valuesG if it exists and has valid dimensions
-          if(!is.null(RE_valuesG) && !is.null(dim(RE_valuesG)) && nrow(RE_valuesG) > 0 && length(unique(ND[, object$id]))/NsampleFE>1){ # only if there are more than 1 individual
+          if(!is.null(RE_valuesG) && !is.null(dim(RE_valuesG)) && nrow(RE_valuesG) > 0 && length(curID)>1){ # only if there are more than 1 individual
             if(!is.null(object[["REstrucS"]])){
-              RE_valuesL <- RE_valuesG[-FRAIL_ind,][1:nRE_for_SEL+ rep((RECOUNT_-1)*nRE_for_SEL, nRE_for_SEL),]
+              subj_long_rows <- (RECOUNT_-1)*NRE_i + length(object[["REstrucS"]]) + (1:nRE_for_SEL)
+              RE_valuesL <- RE_valuesG[subj_long_rows, ]
             }else{
               RE_valuesL <- RE_valuesG[1:nRE_for_SEL+ rep((RECOUNT_-1)*nRE_for_SEL, nRE_for_SEL),]
             }
           }else{
-            RE_valuesL <- RE_valuesG
+            if(!is.null(object[["REstrucS"]]) && !is.null(FRAIL_ind) && !is.null(dim(RE_valuesG))){
+              RE_valuesL <- RE_valuesG[-FRAIL_ind,, drop=FALSE]
+            }else{
+              RE_valuesL <- RE_valuesG
+            }
           }
           ND <- newData[newData[, object$id] == idPred,] # back to individuals now that random effects are done
         }
         if(FEonly && !is.null(RE_values)) RE_values <- matrix(0, nrow = nrow(RE_values), ncol=ncol(RE_values))
         # compute linear predictors for each sample at NtimePoints
-        NEWdata[paste0("ID", object[["REstruc"]])] <- NEWdata[paste0("W", object[["REstruc"]])]
+        RE_id_cols <- paste0("ID", object[["REstruc"]])
+        RE_w_cols <- paste0("W", object[["REstruc"]])
+        for(RE_col_i in seq_along(RE_id_cols)){
+          NEWdata[[RE_id_cols[RE_col_i]]] <- ifelse(is.na(NEWdata[[RE_id_cols[RE_col_i]]]), NA, NEWdata[[RE_w_cols[RE_col_i]]])
+        }
         # A matrix for offset computation
         A_LP <- new("dgTMatrix", Dim=c(length(NEWdata[[1]])-length(survPart), sum(ct$length)))
         if(K==1){
@@ -1585,81 +1857,6 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
           ParVal[posRE, ] <- RE_valuesL
           LP_long <- t(as.matrix(INLA::inla.as.dgTMatrix(A_LP, na.rm=TRUE) %*% ParVal))
         }
-        if(F){
-          errCT <- 1 # counter for error terms
-          for(k in 1:K){
-            if(!is.null(names(object$.args$data$Yjoint))){
-              k_id <- grep(object$longOutcome[k], names(object$.args$data$Yjoint))[1]
-            }else{
-              k_id <- 1
-            }
-            LP_long_k <- LP_long[, (1:NTP)+(k_id-1)*NTP]
-            long_i_den <- NULL
-            if(!(NA %in% ND[, object$longOutcome[k]])){
-              if(object$famLongi[k]=="gaussian"){
-
-                if(length(which(rep(TPO, K) %in% ND[, object$timeVar]))>1){
-                  long_i_mu <- LP_long_k[, which(TPO %in% ND[, object$timeVar])]
-                  long_i_true <- ND[, object$longOutcome[k]]
-                  ResErr_i <- rep(sqrt(1/SMPH[, posPrec[errCT]]), each=NsampleRE)
-                  long_i_den = c(long_i_den, sapply(1:dim(long_i_mu)[1],
-                                                    function(c) prod(mapply(function(x,y) dnorm(x, mean=y, sd=ResErr_i[c]),
-                                                                            x = long_i_true,
-                                                                            y = long_i_mu[c,])))) # sum the logs
-                  errCT <- errCT+1
-                }else{
-                  long_i_mu <- LP_long_k
-                  long_i_true <- ND[, object$longOutcome[k]]
-                  ResErr_i <- rep(sqrt(1/SMPH[, posPrec[errCT]]), each=NsampleRE)
-                  long_i_den = c(long_i_den, sapply(1:length(long_i_mu),
-                                                    function(c) prod(mapply(function(x,y) dnorm(x, mean=y, sd=ResErr_i[c]),
-                                                                            x = long_i_true,
-                                                                            y = long_i_mu[c])))) # sum the logs
-                  errCT <- errCT+1
-                }
-              }else if(object$famLongi[k]=="poisson"){
-                if(length(which(rep(TPO, K) %in% ND[, object$timeVar]))>1){
-                  long_i_mu <- LP_long_k[, which(TPO %in% ND[, object$timeVar])]
-                  long_i_true <- ND[, object$longOutcome[k]]
-                  long_i_den = c(long_i_den, sapply(1:dim(long_i_mu)[1],
-                                                    function(c) prod(mapply(function(x,y) dpois(x, lambda=exp(y)),
-                                                                            x = long_i_true,
-                                                                            y = long_i_mu[c,])))) # sum the logs
-                }else{
-                  long_i_mu <- LP_long_k
-                  long_i_true <- ND[, object$longOutcome[k]]
-                  long_i_den = c(long_i_den, sapply(1:length(long_i_mu),
-                                                    function(c) prod(mapply(function(x,y) dpois(x, lambda=exp(y)),
-                                                                            x = long_i_true,
-                                                                            y = long_i_mu[c])))) # sum the logs
-                }
-              }else if(object$famLongi[k]=="binomial"){
-                if(length(which(rep(TPO, K) %in% ND[, object$timeVar]))>1){
-                  long_i_mu <- LP_long_k[, which(TPO %in% ND[, object$timeVar])]
-                  long_i_true <- ND[, object$longOutcome[k]]
-                  long_i_den = c(long_i_den, sapply(1:dim(long_i_mu)[1],
-                                                    function(c) prod(mapply(function(x,y) dbinom(x, size=1, prob=exp(y)/(1+exp(y))),
-                                                                            x = long_i_true,
-                                                                            y = long_i_mu[c,])))) # sum the logs
-                }else{
-                  long_i_mu <- LP_long_k
-                  long_i_true <- ND[, object$longOutcome[k]]
-                  long_i_den = c(long_i_den, sapply(1:length(long_i_mu),
-                                                    function(c) prod(mapply(function(x,y) dbinom(x, size=1, prob=exp(y)/(1+exp(y))),
-                                                                            x = long_i_true,
-                                                                            y = long_i_mu[c])))) # sum the logs
-                }
-              }
-            }else{
-              long_i_den <- rep(1, dim(LP_long_k)[1])
-            }
-            long_i_den3 <- c(sapply(1:Nsample, function(x) long_i_den[(x-1)*NsampleRE + 1:NsampleRE]/sum(long_i_den[(x-1)*NsampleRE + 1:NsampleRE])))
-            # LP_long_save <- LP_long
-            LP_long[, (1:NTP)+(k_id-1)*NTP] <- LP_long_k*long_i_den3
-          }
-          LP_long <- t(sapply(1:Nsample, function(x) colSums(LP_long[(x-1)*NsampleRE + 1:NsampleRE,])))
-          LP_long <- LP_long[rep(1:dim(LP_long)[1], each=NsampleRE),] # this may not be a good idea...
-        }
         if(resErrLong){ # add residual error
           famerr <- which(object$famLongi %in%c("gaussian", "lognormal"))
           hyperr <- sort(c(grep("Gaussian", colnames(SMPH)), grep("gaussian", colnames(SMPH)), grep("lognormal", colnames(SMPH))))
@@ -1696,9 +1893,9 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
           }
           addNamesL <- c("Mean", "Sd", "quant0.025", "quant0.5", "quant0.975")
         }
-        newPredL <- data.frame(rep(as.factor(rep(idPred, length(LdataPred[, object$id]))), K), rep(LdataPred[, object$timeVar], K),
+        newPredL <- data.frame(rep(as.factor(rep(.idLabel(idPred), length(LdataPred[, object$id]))), K), rep(LdataPred[, object$timeVar], K),
                                rep(object$longOutcome, each=NTP), RESpredL)
-        colnames(newPredL) <- c(object$id, object$timeVar, "Outcome", addNamesL)
+        colnames(newPredL) <- c(idname, object$timeVar, "Outcome", addNamesL)
         predL <- rbind(predL, newPredL)
         # rm("RE_valuesL")
       }
@@ -1706,7 +1903,7 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
     ###          ###
     ### SURVIVAL ###
     ###          ###
-    if(is_Surv){
+    if(is_Surv & !return.RE){
       if(is_Long & is.null(Csurv)){
         CsurvSET <- max(ND[, object$timeVar])
       }else if(!is_Long & is.null(Csurv)){
@@ -1721,7 +1918,18 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
       TPO2 <- TPO[TPO>=startP]
       NTP2 <- length(TPO2)
       NTP_s <- NTP-NTP2+1
-      survPart2 <- survPart[c(unlist(sapply(1:M, function(x) which(NEWdata[[paste0("baseline", x, ".hazard.time")]][NEWdata[[paste0("baseline", x, ".hazard.idx")]]!=0] %in% TPO2))))] # extract part where there is an actual risk
+      # extract part where there is an actual risk
+      # For M>1, offset the which() indices so each outcome indexes its own portion of survPart
+      .sp2_idx <- integer(0)
+      .sp2_off <- 0L
+      for(.sp2_m in 1:M){
+        .sp2_active <- NEWdata[[paste0("baseline", .sp2_m, ".hazard.idx")]] != 0
+        .sp2_times <- NEWdata[[paste0("baseline", .sp2_m, ".hazard.time")]][.sp2_active]
+        .sp2_in_TPO2 <- which(.sp2_times %in% TPO2)
+        .sp2_idx <- c(.sp2_idx, .sp2_in_TPO2 + .sp2_off)
+        .sp2_off <- .sp2_off + sum(.sp2_active)
+      }
+      survPart2 <- survPart[.sp2_idx]
       # baseline risk setup
       if(baselineHaz=="PWconstant"){
         if(dim(ND)[1]==1){ # use existent cutpoints
@@ -1758,10 +1966,13 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
         for(m in 1:M){
           if(object$basRisk[[m]] %in% c("rw1", "rw2")){
             mesh1d <- fmesher::fm_mesh_1d(loc = object$summary.random[[paste0("baseline", m, ".hazard")]]$ID, degree = 1)
-            if(m==1){
-              Aproj <- INLA::inla.spde.make.A(mesh = mesh1d, loc = NEWdata[[paste0("baseline", m, ".hazard.time")]][NEWdata[[paste0("baseline", m, ".hazard.idx")]]!=0][which(NEWdata[[paste0("baseline", m, ".hazard.time")]][NEWdata[[paste0("baseline", m, ".hazard.idx")]]!=0] %in% TPO2)])
+            .bl_active <- NEWdata[[paste0("baseline", m, ".hazard.idx")]] != 0
+            .bl_times <- NEWdata[[paste0("baseline", m, ".hazard.time")]][.bl_active]
+            .bl_loc <- .bl_times[which(.bl_times %in% TPO2)]
+            if(is.null(Aproj)){
+              Aproj <- INLA::inla.spde.make.A(mesh = mesh1d, loc = .bl_loc)
             }else{
-              Aproj <- bdiag(Aproj, INLA::inla.spde.make.A(mesh = mesh1d, loc = NEWdata[[paste0("baseline", m, ".hazard.time")]][which(NEWdata[[paste0("baseline", m, ".hazard.time")]][NEWdata[[paste0("baseline", m, ".hazard.idx")]]!=0] %in% TPO2)]))
+              Aproj <- bdiag(Aproj, INLA::inla.spde.make.A(mesh = mesh1d, loc = .bl_loc))
             }
           }
         }
@@ -1819,7 +2030,7 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
           if(is.null(dim(set.samples[[rsmp]]))){
             ParVal[ct$start[ct$tag==Nrsmp], ] <- set.samples[[rsmp]]
           }else{
-            ParVal[ct$start[ct$tag==Nrsmp], ] <- set.samples[[rsmp]][idPredt,]
+            ParVal[ct$start[ct$tag==Nrsmp], ] <- set.samples[[rsmp]][idPredt_global,]
           }
         }
         # need to remove the corresponding random effect from formula
@@ -1921,11 +2132,15 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
         # A_SP <- A_SP_save
         if(!is.null(object[["REstrucS"]])){ # frailty terms?
           # select random effects values for the current individual (only if there are more than 1 individual)
-          if(!is.null(RE_valuesG) && !is.null(dim(RE_valuesG)) && nrow(RE_valuesG) > 0 && length(unique(NDS[, object$id]))/NsampleFE>1){ # only if there are more than 1 individual
+          if(!is.null(RE_valuesG) && !is.null(dim(RE_valuesG)) && nrow(RE_valuesG) > 0 && length(curID)>1){ # only if there are more than 1 individual
             RE_valuesS <- RE_valuesG[1:NRE_i+ rep((RECOUNT_-1)*NRE_i, NRE_i),]#[FRAIL_ind,]
             if(!is.null(dim(RE_valuesS))) RE_valuesS <- RE_valuesS[FRAIL_ind,]
-          }else if(!is_Long & (length(unique(NDS[, object$id]))/NsampleFE)==1){
-            RE_valuesS <- RE_valuesG
+          }else if(length(curID)==1){
+            if(!is.null(RE_valuesG) && !is.null(dim(RE_valuesG)) && nrow(RE_valuesG) > 0){
+              RE_valuesS <- RE_valuesG[FRAIL_ind,, drop=FALSE]
+            }else{
+              RE_valuesS <- RE_valuesG
+            }
           }else{
             # Handle case where RE_valuesG doesn't exist or is invalid
             RE_valuesS <- NULL
@@ -1939,6 +2154,12 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
             PRM <- (ct2$start[m_intin]+1):(ct2$start[m_intin]+(ct2$length[m_intin]-1))
             A_SP <- A_SP[, -PRM]
             ParValS <- ParValS[-PRM,]
+            re_s <- as.integer(tail(strsplit(ct2$tag[m_intin], "_S")[[1]], 1))
+            if(!is.na(re_s) && re_s >= 1 && re_s <= M){
+              s_rows <- ((re_s-1)*NTP2+1):(re_s*NTP2)
+              A_SP[setdiff(1:nrow(A_SP), s_rows), ct2$start[m_intin]] <- 0
+              A_SP[s_rows, ct2$start[m_intin]] <- 1
+            }
             ct2$start[-c(1:m_intin)] <- ct2$start[-c(1:m_intin)] - length(PRM)
             ct2$length[m_intin] <- 1
           }
@@ -1951,7 +2172,9 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
               PRM <- (ct2$start[m_intiCT]+1):(ct2$start[m_intiCT]+(ct2$length[m_intiCT]-1)) # remove other time points
               A_SP <- A_SP[, -PRM]
               ParValS <- ParValS[-PRM,]
-              A_SP[which(!is.na(A_SP[, ct2$start[m_intiCT]])), ct2$start[m_intiCT]] <- 1
+              s_rows <- ((m_ind-1)*NTP2+1):(m_ind*NTP2)
+              A_SP[, ct2$start[m_intiCT]] <- 0
+              A_SP[s_rows, ct2$start[m_intiCT]] <- 1
               ct2$start[-c(1:m_intiCT)] <- ct2$start[-c(1:m_intiCT)] - length(PRM)
               ct2$length[m_intiCT] <- 1
               # compute scaled frailty term and insert in shared part
@@ -1983,14 +2206,16 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
               PRM <- (ct2$start[m_intiCT]+1):(ct2$start[m_intiCT]+(ct2$length[m_intiCT]-1)) # remove other time points
               A_SP <- A_SP[, -PRM]
               ParValS <- ParValS[-PRM,]
-              A_SP[which(!is.na(A_SP[, ct2$start[m_intiCT]])), ct2$start[m_intiCT]] <- 1
+              s_rows <- ((m_ind-1)*NTP2+1):(m_ind*NTP2)
+              A_SP[, ct2$start[m_intiCT]] <- 0
+              A_SP[s_rows, ct2$start[m_intiCT]] <- 1
               ct2$start[-c(1:m_intiCT)] <- ct2$start[-c(1:m_intiCT)] - length(PRM)
               ct2$length[m_intiCT] <- 1
               # compute scaled frailty term and insert in shared part
               if(is.null(dim(set.samples[[ias]]))){
                 ParValS[ct2$start[m_intiCT], ] <- set.samples[[ias]] * SMPH[, m_inti]
               }else{
-                ParValS[ct2$start[m_intiCT], ] <- set.samples[[ias]][idPredt,] * SMPH[, m_inti]
+                ParValS[ct2$start[m_intiCT], ] <- set.samples[[ias]][idPredt_global,] * SMPH[, m_inti]
               }
             }
           }
@@ -2013,7 +2238,7 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
         Risk2 <- rbind(Risk2, rbind(Risk13, Risk12[1:NTP2 + rep(max(NTP2), NTP2)*(m-1),]))
       }
       if(is.null(object$timeVar)) TimeVar <- "time" else TimeVar <- object$timeVar
-      newPredS <- data.frame(as.factor(rep(idPred, M*NTP)), rep(TPO, M),
+      newPredS <- data.frame(as.factor(rep(.idLabel(idPred), M*NTP)), rep(TPO, M),
                              rep(paste0("S_", 1:M), each=NTP), Risk2)
       colnames(newPredS) <- c(idname, TimeVar, "Outcome", addNamesS)
       if(survival){
@@ -2049,7 +2274,11 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
         CIF_Samp_ <- NULL
         for(m in 1:M){
           rmTP <- c(rep(1:length(TPO2), M-1)+(rep((1:M)[-m], each=length(TPO2))-1)*length(TPO2))
-          CIFSamp2 <- apply(LP_surv[,-rmTP], 1, function(x) cumsum(x*c(0, diff(TPO2))))
+          if(length(rmTP)>0){
+            CIFSamp2 <- apply(LP_surv[,-rmTP], 1, function(x) cumsum(x*c(0, diff(TPO2))))
+          }else{
+            CIFSamp2 <- apply(LP_surv, 1, function(x) cumsum(x*c(0, diff(TPO2))))
+          }
           CIFSamp[[m]] <- rbind(CIFSamp[[m]], CIFSamp2)
         }
         # compute overall survival
@@ -2076,6 +2305,18 @@ predict.INLAjoint <- function(object, newData=NULL, newDataSurv=NULL, timePoints
       }
       predS <- rbind(predS, newPredS)
     }
+    }
+    n_done <- n_done + 1L
+    if(show_progress){
+      pct <- round(100 * n_done / n_total)
+      prog_msg <- sprintf("\r  ... %d%% (%d/%d)...", pct, n_done, n_total)
+      cat(prog_msg, file = stderr())
+    }
+  }
+  if(show_progress) cat("\n", file = stderr())
+  if(return.RE){
+    if(!silentMode) message(paste0("...done!"))
+    return(list("RE"=REout))
   }
   if(!silentMode) message(paste0("...done!"))
   return(list("PredL"=predL, "PredS"=predS))

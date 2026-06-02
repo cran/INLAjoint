@@ -2,7 +2,7 @@ Package: INLAjoint
 Type: Package
 Title: Multivariate Joint Modeling for Longitudinal and Time-to-Event
         Outcomes with 'INLA'
-Version: 25.11.10
+Version: 26.6.2
 Authors@R: c(
     person("Denis", "Rustand", email = "INLAjoint@gmail.com", 
         role = c("cre", "aut"),
@@ -24,16 +24,18 @@ BugReports: https://github.com/DenisRustand/INLAjoint/issues
 Encoding: UTF-8
 LazyData: true
 Depends: R (>= 3.6), utils, stats
-Imports: numDeriv, lme4, ggplot2, methods, Matrix, nlme, data.table
+Imports: numDeriv, reformulas, ggplot2, methods, Matrix, nlme,
+        data.table
 Additional_repositories: https://inla.r-inla-download.org/R/testing
-RoxygenNote: 7.3.3
 Suggests: INLA, knitr, rmarkdown, splines, graphics, grDevices, R.rsp,
-        survival, JMbayes2, rstanarm, frailtypack, smcure, fmesher
+        survival, JMbayes2, rstanarm, frailtypack, smcure, fmesher,
+        MASS, sn
 BuildVignettes: true
 VignetteBuilder: R.rsp
 Maintainer: Denis Rustand <INLAjoint@gmail.com>
+Config/roxygen2/version: 8.0.0
 NeedsCompilation: no
-Packaged: 2025-11-10 21:54:16 UTC; dr
+Packaged: 2026-06-02 16:44:38 UTC; dr
 Author: Denis Rustand [cre, aut] (ORCID:
     <https://orcid.org/0000-0001-9708-5220>),
   Elias Teixeira Krainski [aut] (ORCID:
@@ -42,4 +44,4 @@ Author: Denis Rustand [cre, aut] (ORCID:
   Janet van Niekerk [aut] (ORCID:
     <https://orcid.org/0000-0002-4334-2057>)
 Repository: CRAN
-Date/Publication: 2025-11-10 22:10:02 UTC
+Date/Publication: 2026-06-02 18:20:07 UTC
